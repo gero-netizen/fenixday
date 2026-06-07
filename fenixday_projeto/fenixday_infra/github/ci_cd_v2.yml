@@ -1,0 +1,272 @@
+# FênixDay — CI/CD v2 (com Flutter Web + segurança)
+#
+# Jobs:
+#   test-api      → testa API a cada push em main
+#   build-apk     → gera APK Android em tags v*.*.*
+#   build-web     → gera build Flutter Web em tags v*.*.*
+#   deploy        → deploy da API + web no servidor via SSH
+
+name: FênixDay CI/CD v2
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION:  "3.12"
+  FLUTTER_VERSION: "3.22.0"
+
+# ── Job 1: Testes da API ──────────────────────────────────────────────────────
+jobs:
+  test-api:
+    name: Testes FastAPI
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB:       fenixday_test
+          POSTGRES_USER:     fenix
+          POSTGRES_PASSWORD: testpass
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instala dependências
+        working-directory: fenixday_server
+        run: pip install -r requirements.txt
+
+      - name: Roda testes do grid_math
+        working-directory: fenixday_server
+        run: python tests/test_grid_math.py
+
+      - name: Roda testes do scanner (offline)
+        working-directory: fenixday_scanner
+        run: python scanner_runner.py --test
+
+      - name: Verifica importações do servidor
+        working-directory: fenixday_server
+        env:
+          DATABASE_URL: postgresql+asyncpg://fenix:testpass@localhost:5432/fenixday_test
+          REDIS_URL:    redis://localhost:6379/0
+          SECRET_KEY:   test-secret-key-for-ci-only
+        run: |
+          python -c "
+          from app.config import settings
+          from app.security.jwt_blacklist import _token_hash
+          from app.security.brute_force import MAX_ATTEMPTS_EMAIL
+          from app.security.audit_log import AuditEvent
+          print('✅ Todos os módulos importados com sucesso')
+          print(f'   Max tentativas: {MAX_ATTEMPTS_EMAIL}')
+          print(f'   Eventos de auditoria: {len(list(AuditEvent))}')
+          "
+
+# ── Job 2: Build APK Android ──────────────────────────────────────────────────
+  build-apk:
+    name: Build APK Android
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Instala dependências
+        working-directory: fenixday_app
+        run: flutter pub get
+
+      - name: Gera código Drift
+        working-directory: fenixday_app
+        run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Analisa o código
+        working-directory: fenixday_app
+        run: flutter analyze --no-fatal-infos
+
+      - name: Build APK release
+        working-directory: fenixday_app
+        run: |
+          flutter build apk --release \
+            --dart-define=FLAVOR=prod \
+            --obfuscate \
+            --split-debug-info=build/debug-info
+
+      - name: Renomeia APK
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          mv fenixday_app/build/app/outputs/flutter-apk/app-release.apk \
+             fenixday_app/build/app/outputs/flutter-apk/fenixday-${VERSION}.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenixday-apk-${{ github.ref_name }}
+          path: fenixday_app/build/app/outputs/flutter-apk/fenixday-*.apk
+          retention-days: 90
+
+# ── Job 3: Build Flutter Web ──────────────────────────────────────────────────
+  build-web:
+    name: Build Flutter Web
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test-api
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Instala dependências
+        working-directory: fenixday_app
+        run: flutter pub get
+
+      - name: Gera código Drift
+        working-directory: fenixday_app
+        run: flutter pub run build_runner build --delete-conflicting-outputs
+
+      - name: Build Web release
+        working-directory: fenixday_app
+        run: |
+          flutter build web --release \
+            --dart-define=FLAVOR=prod \
+            --base-href="/app/"
+
+      - name: Upload build web
+        uses: actions/upload-artifact@v4
+        with:
+          name: fenixday-web-${{ github.ref_name }}
+          path: fenixday_app/build/web/
+          retention-days: 90
+
+# ── Job 4: GitHub Release ─────────────────────────────────────────────────────
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-apk, build-web]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: fenixday-apk-${{ github.ref_name }}
+          path: artifacts/
+
+      - name: Cria Release com APK
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/fenixday-*.apk
+          generate_release_notes: true
+          body: |
+            ## FênixDay ${{ github.ref_name }}
+
+            ### Instalação Android (APK direto)
+            1. Baixe `fenixday-${{ github.ref_name }}.apk`
+            2. Android: Configurações → Segurança → Instalar apps desconhecidos
+            3. Abra o APK para instalar
+
+            ### Dashboard Web
+            Acesse em: `https://seudominio.com/app`
+
+            ### Novidades
+            Veja o CHANGELOG para detalhes das mudanças desta versão.
+
+# ── Job 5: Deploy no servidor ─────────────────────────────────────────────────
+  deploy:
+    name: Deploy Produção
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-apk, build-web]
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build web
+        uses: actions/download-artifact@v4
+        with:
+          name: fenixday-web-${{ github.ref_name }}
+          path: web-build/
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.SERVER_DEPLOY_PATH }}
+
+            echo "📥 Atualizando código..."
+            git pull origin main
+
+            echo "🐳 Build e restart da API..."
+            docker compose build --no-cache api
+            docker compose up -d --no-deps api
+
+            echo "⏳ Aguardando API..."
+            sleep 10
+            curl -sf http://localhost:8000/health || exit 1
+
+            echo "✅ API atualizada!"
+
+      - name: Deploy Flutter Web via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
+          source:   "web-build/*"
+          target:   "/var/www/fenixday-web/"
+          strip_components: 1
+
+      - name: Recarrega Nginx
+        uses: appleboy/ssh-action@v1
+        with:
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            docker exec fenix_nginx nginx -s reload
+            echo "✅ Nginx recarregado — web disponível em /app"

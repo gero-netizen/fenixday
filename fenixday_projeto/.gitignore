@@ -1,0 +1,41 @@
+# Segurança — NUNCA commitar
+.env
+*.env
+*.jks
+*.keystore
+key.properties
+**/google-services.json
+**/GoogleService-Info.plist
+
+# Flutter
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/pubspec.lock
+**/.packages
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.venv/
+**/venv/
+**/*.egg-info/
+
+# IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Logs e backups
+*.log
+/var/log/
+*.sql.gz
+/var/backups/
+
+# OS
+.DS_Store
+Thumbs.db
