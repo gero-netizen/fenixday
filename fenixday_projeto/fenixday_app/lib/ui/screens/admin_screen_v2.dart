@@ -80,17 +80,17 @@ final _filterProvider = StateProvider<String>((ref) => 'todos');
 final _metricsProvider = Provider<_AdminMetrics>((ref) => const _AdminMetrics(
   totalUsers: 1284, activeUsers: 847, exemptUsers: 312,
   expiredUsers: 112, bannedUsers: 13,
-  revenueMonthly: 9_821.13, revenueTotal: 47_842.50,
+  revenueMonthly: 9821.13, revenueTotal: 47842.50,
   newToday: 12, basicCount: 621, proCount: 198, premiumCount: 28,
 ));
 
 final _usersProvider = Provider<List<_AdminUser>>((ref) => [
-  _AdminUser(id:'1', email:'joao@email.com',    planName:'Pro',     licenseStatus:'active',   tradedVolume:12_450, createdAt:DateTime(2026,2,1),  lastLogin:DateTime(2026,6,5)),
+  _AdminUser(id:'1', email:'joao@email.com',    planName:'Pro',     licenseStatus:'active',   tradedVolume:12450, createdAt:DateTime(2026,2,1),  lastLogin:DateTime(2026,6,5)),
   _AdminUser(id:'2', email:'maria@email.com',   planName:'Isento',  licenseStatus:'exempt',   tradedVolume:142,    createdAt:DateTime(2026,5,10), lastLogin:DateTime(2026,6,4)),
   _AdminUser(id:'3', email:'pedro@email.com',   planName:'Basic',   licenseStatus:'active',   tradedVolume:890,    createdAt:DateTime(2026,2,15), lastLogin:DateTime(2026,6,5)),
   _AdminUser(id:'4', email:'ana@email.com',     planName:'Basic',   licenseStatus:'expired',  tradedVolume:520,    createdAt:DateTime(2026,1,20), lastLogin:DateTime(2026,5,28)),
-  _AdminUser(id:'5', email:'vip@fenixday.com',  planName:'Premium', licenseStatus:'lifetime', tradedVolume:98_000, createdAt:DateTime(2025,12,1), lastLogin:DateTime(2026,6,5)),
-  _AdminUser(id:'6', email:'carlos@email.com',  planName:'Pro',     licenseStatus:'active',   tradedVolume:21_000, createdAt:DateTime(2026,4,5),  lastLogin:DateTime(2026,6,3)),
+  _AdminUser(id:'5', email:'vip@fenixday.com',  planName:'Premium', licenseStatus:'lifetime', tradedVolume:98000, createdAt:DateTime(2025,12,1), lastLogin:DateTime(2026,6,5)),
+  _AdminUser(id:'6', email:'carlos@email.com',  planName:'Pro',     licenseStatus:'active',   tradedVolume:21000, createdAt:DateTime(2026,4,5),  lastLogin:DateTime(2026,6,3)),
   _AdminUser(id:'7', email:'lucia@email.com',   planName:'Isento',  licenseStatus:'exempt',   tradedVolume:85,     createdAt:DateTime(2026,6,1),  lastLogin:DateTime(2026,6,5)),
   _AdminUser(id:'8', email:'spam@bad.com',      planName:'Basic',   licenseStatus:'active',   tradedVolume:600,    createdAt:DateTime(2026,3,1),  lastLogin:DateTime(2026,5,1), isBanned:true),
 ]);
@@ -749,8 +749,8 @@ class _RevenueTab extends ConsumerWidget {
     final fmt = NumberFormat('#,##0.00', 'pt_BR');
 
     final months = [
-      ('Jan/26', 6_420.0), ('Fev/26', 7_030.0), ('Mar/26', 7_540.0),
-      ('Abr/26', 7_980.0), ('Mai/26', 9_200.0), ('Jun/26', 9_821.13),
+      ('Jan/26', 6420.0), ('Fev/26', 7030.0), ('Mar/26', 7540.0),
+      ('Abr/26', 7980.0), ('Mai/26', 9200.0), ('Jun/26', 9821.13),
     ];
     final maxRev = months.map((m) => m.$2).reduce((a, b) => a > b ? a : b);
 
@@ -1236,7 +1236,7 @@ class _TopGridCard extends StatelessWidget {
               grid.isVerified ? 'Remover verificação' : 'Verificar',
               grid.isVerified ? FenixColors.textMuted : FenixColors.blue,
               grid.isVerified
-                  ? Icons.verified_off_outlined
+                  ? Icons.gpp_bad
                   : Icons.verified_outlined,
               () {},
             )),

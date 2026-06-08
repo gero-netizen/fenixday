@@ -19,7 +19,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:crypto/crypto.dart';
 
-import '../theme/fenix_theme.dart';
+import '../../theme/fenix_theme.dart';
 
 // ── Constantes de storage ─────────────────────────────────────────────────────
 

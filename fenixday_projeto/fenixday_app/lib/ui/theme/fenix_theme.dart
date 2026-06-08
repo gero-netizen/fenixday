@@ -108,7 +108,7 @@ final fenixTheme = ThemeData(
   ),
 
   // TabBar
-  tabBarTheme: const TabBarTheme(
+  tabBarTheme: const TabBarThemeData(
     labelColor:         FenixColors.yellow,
     unselectedLabelColor: FenixColors.textMuted,
     indicatorColor:     FenixColors.yellow,
@@ -192,7 +192,7 @@ final fenixTheme = ThemeData(
   ),
 
   // Card
-  cardTheme: CardTheme(
+  cardTheme: CardThemeData(
     color:       FenixColors.card,
     elevation:   0,
     shape: RoundedRectangleBorder(
@@ -255,7 +255,7 @@ final fenixTheme = ThemeData(
   ),
 
   // Dialog
-  dialogTheme: const DialogTheme(
+  dialogTheme: const DialogThemeData(
     backgroundColor: FenixColors.card,
     shape: RoundedRectangleBorder(
       borderRadius: BorderRadius.all(Radius.circular(12)),

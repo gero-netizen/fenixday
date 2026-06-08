@@ -103,9 +103,9 @@ final _portfolioProvider = Provider<_PortfolioData>((ref) {
   });
 
   return _PortfolioData(
-    capitalAlocado:      3_784.50,
+    capitalAlocado:      3784.50,
     lucroGridAcumulado:    342.18,
-    patrimonioTotal:     4_126.68,
+    patrimonioTotal:     4126.68,
     lucroGridHoje:          14.38,
     lucroGridSemana:        89.20,
     lucroGridMes:          342.18,

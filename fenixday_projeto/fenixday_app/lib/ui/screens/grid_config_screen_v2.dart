@@ -311,7 +311,7 @@ class _VerticalToolbar extends ConsumerWidget {
     ],
     // Grupo 6: extras
     [
-      _VTool('magnet',    Icons.magnet,                 'Imã'),
+      _VTool('magnet',    Icons.adjust,                 'Imã'),
       _VTool('layers',    Icons.layers_outlined,        'Camadas / Visibilidade'),
       _VTool('lock',      Icons.lock_outline,           'Bloquear objetos'),
       _VTool('eye_cfg',   Icons.visibility_outlined,    'Configurar visibilidade'),

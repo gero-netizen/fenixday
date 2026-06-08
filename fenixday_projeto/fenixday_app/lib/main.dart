@@ -12,16 +12,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'ui/theme/fenix_theme.dart';
-import 'ui/screens/auth/login_screen.dart';
+import 'ui/screens/login_screen.dart';
 import 'ui/screens/dashboard_screen_v2.dart';
 import 'ui/screens/grid_config_screen_v2.dart';
-import 'ui/screens/trading/top_grids_screen.dart';
-import 'ui/screens/trading/paper_trading_screen.dart';
+import 'ui/screens/top_grids_screen.dart';
+import 'ui/screens/paper_trading_screen.dart';
 import 'ui/screens/license_screen_v3.dart';
 import 'ui/screens/admin_screen_v2.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
-import 'ui/screens/legal/privacy_screen.dart';
+import 'ui/screens/privacy_screen.dart';
 
 // ── Provider de autenticação ──────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ final _router = GoRouter(
     GoRoute(
       path: '/privacidade',
       name: 'privacidade',
-      builder: (_, __) => const PrivacyScreen(),
+      builder: (_, __) => PrivacySettingsScreen(),
     ),
   ],
 );

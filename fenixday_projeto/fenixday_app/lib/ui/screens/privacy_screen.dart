@@ -13,9 +13,9 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../theme/fenix_theme.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../theme/fenix_theme.dart';
 
 // ── Tela de aceite inicial (onboarding) ───────────────────────────────────────
 
