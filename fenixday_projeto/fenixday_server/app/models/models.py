@@ -197,7 +197,7 @@ class AuditLog(Base):
     ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     success:    Mapped[bool]       = mapped_column(Boolean, default=True)
-    metadata:   Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON string
+    extra_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime]   = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

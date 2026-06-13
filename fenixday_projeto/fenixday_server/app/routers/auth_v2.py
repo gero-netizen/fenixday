@@ -15,10 +15,10 @@ from jose import JWTError
 import uuid
 
 from app.database import get_db
-from app.security_base import decode_access_token
-from app.schemas.schemas import (
+from app.security.security_base import decode_access_token
+from app.schemas import (
     RegisterRequest, LoginRequest, TokenResponse,
-    UserResponse, TelegramUpdateRequest,
+    UserResponse, TelegramUpdateRequest, ChangePasswordRequest,
 )
 from app.services.auth_service import register_user, authenticate_user
 from app.models.models import User, LicenseStatus
@@ -29,6 +29,7 @@ from app.security.brute_force import (
     check_brute_force, record_failed_attempt, record_successful_login
 )
 from app.security.audit_log import log_event, AuditEvent
+from app.security.security_base import create_access_token
 from sqlalchemy import select
 from pydantic import BaseModel
 
@@ -88,14 +89,17 @@ async def register(
 ):
     """Cadastro com brute force check e audit log."""
     from app.security.brute_force import _get_ip
-    user = await register_user(db, payload)
+    user = await register_user(db, payload.email, payload.password)
     await log_event(
-        db, AuditEvent.REGISTER,
+        AuditEvent.REGISTER,
         actor_id=str(user.id),
         ip_address=_get_ip(request),
-        message=f"Novo cadastro: {user.email}",
     )
-    return _build_user_response(user)
+    from sqlalchemy import select as sa_select
+    from app.models.models import License
+    lic_result = await db.execute(sa_select(License).where(License.user_id == user.id))
+    lic = lic_result.scalar_one_or_none()
+    return _build_user_response(user, lic)
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -111,26 +115,28 @@ async def login(
     await check_brute_force(request, payload.email)
 
     try:
-        result = await authenticate_user(db, payload)
+        user = await authenticate_user(db, payload.email, payload.password)
+        if not user:
+            raise HTTPException(status_code=401, detail="Credenciais inválidas")
         # Login bem-sucedido — zera contadores
         await record_successful_login(request, payload.email)
         await log_event(
-            db, AuditEvent.LOGIN_SUCCESS,
+            AuditEvent.LOGIN_SUCCESS,
             actor_id=payload.email,
             ip_address=_get_ip(request),
             success=True,
         )
-        return result
+        access_token = create_access_token({"sub": str(user.id), "email": user.email})
+        return TokenResponse(access_token=access_token)
 
     except HTTPException as e:
         # Login falhou — incrementa contadores
         await record_failed_attempt(request, payload.email)
         await log_event(
-            db, AuditEvent.LOGIN_FAILED,
+            AuditEvent.LOGIN_FAILED,
             actor_id=payload.email,
             ip_address=_get_ip(request),
             success=False,
-            message=str(e.detail),
         )
         raise
 
@@ -151,7 +157,7 @@ async def logout(
         pass  # Token já inválido — logout silencioso
 
     await log_event(
-        db, AuditEvent.LOGOUT,
+        AuditEvent.LOGOUT,
         actor_id=str(current_user.id),
         ip_address=_get_ip(request),
     )
@@ -179,7 +185,7 @@ async def change_password(
     await revoke_all_user_tokens(str(current_user.id))
 
     await log_event(
-        db, AuditEvent.PASSWORD_CHANGED,
+        AuditEvent.PASSWORD_CHANGED,
         actor_id=str(current_user.id),
         ip_address=_get_ip(request),
     )
@@ -212,14 +218,10 @@ class ChangePasswordRequest(BaseModel):
 
 # ── Helper ────────────────────────────────────────────────────────────────────
 
-def _build_user_response(user: User) -> UserResponse:
-    lic = user.license
+def _build_user_response(user: User, lic=None) -> UserResponse:
     return UserResponse(
-        id=user.id,
+        id=str(user.id),
         email=user.email,
         is_active=user.is_active,
-        created_at=user.created_at,
-        license_status=lic.status if lic else LicenseStatus.PENDING,
-        is_lifetime=lic.is_lifetime if lic else False,
-        telegram_chat_id=user.telegram_chat_id,
+        is_superuser=getattr(user, "is_superuser", False),
     )

@@ -1,7 +1,12 @@
-# Serviços FênixDay v2.0
-#   btcpay    → gateway de pagamento
-#   nbxplorer → indexador blockchain
-#   bitcoin   → nó Bitcoin Core (pruned ~10GB)
+# FênixDay — Docker Compose v2 (com Redis para segurança)
+#
+# Serviços:
+#   nginx      → reverse proxy + SSL
+#   api        → FastAPI
+#   postgres   → banco central
+#   redis      → JWT blacklist + brute force + rate limiting
+#   btcpay     → gateway de pagamento
+#   nbxplorer  → indexador blockchain
 
 version: "3.9"
 
@@ -16,7 +21,6 @@ volumes:
   nbx_data:
   nginx_certs:
   nginx_html:
-  bitcoin_data:
 
 services:
 
@@ -41,7 +45,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # — Redis (JWT blacklist + brute force) ————————————————————————
+  # ── Redis (JWT blacklist + brute force) ───────────────────────────────────
   redis:
     image: redis:7-alpine
     container_name: fenix_redis
@@ -54,6 +58,7 @@ services:
       --maxmemory 128mb
       --maxmemory-policy allkeys-lru
       --save 60 1
+      --appendonly yes
     volumes:
       - redis_data:/data
     networks:
@@ -61,18 +66,37 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
-      timeout: 5s
+      timeout: 3s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
 
-  # — API FastAPI ————————————————————————————————————————————————
   api:
     build:
-      context: ../fenixday_projeto
+      context: ../fenixday_server
       dockerfile: Dockerfile
     container_name: fenix_api
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      DATABASE_URL:          postgresql+asyncpg://${POSTGRES_USER:-fenix}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fenixday}
+      REDIS_URL:             redis://:${REDIS_PASSWORD}@redis:6379/0
+      SECRET_KEY:            ${SECRET_KEY}
+      PREVIOUS_SECRET_KEY:   ${PREVIOUS_SECRET_KEY:-}
+      ALGORITHM:             HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 10080
+      BTCPAY_SERVER_URL:     ${BTCPAY_SERVER_URL}
+      BTCPAY_API_KEY:        ${BTCPAY_API_KEY}
+      BTCPAY_STORE_ID:       ${BTCPAY_STORE_ID}
+      BTCPAY_WEBHOOK_SECRET: ${BTCPAY_WEBHOOK_SECRET}
+      GOOGLE_CLIENT_ID:      ${GOOGLE_CLIENT_ID}
+      LICENSE_PRICE_USDT:    ${LICENSE_PRICE_USDT:-10.00}
+      DEBUG:                 "false"
+      ENVIRONMENT:           production
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,45 +106,19 @@ services:
       - fenix_net
     expose:
       - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
-  # — Bitcoin Core (pruned) ——————————————————————————————————————
-  bitcoin:
-    image: btcpayserver/bitcoin:26.0
-    container_name: fenix_bitcoin
-    hostname: bitcoin
-    restart: unless-stopped
-    networks:
-      - fenix_net
-    volumes:
-      - bitcoin_data:/home/bitcoin/.bitcoin
-    environment:
-      BITCOIN_NETWORK: mainnet
-      BITCOIN_EXTRA_ARGS: |
-        prune=10000
-        txindex=0
-        server=1
-        rpcuser=fenixbtc
-        rpcpassword=FenixBTC2026!
-        rpcallowip=0.0.0.0/0
-        rpcbind=0.0.0.0
-        zmqpubrawblock=tcp://0.0.0.0:28332
-        zmqpubrawtx=tcp://0.0.0.0:28333
-        whitelist=noban@172.18.0.0/16
-        whitelist=download@172.18.0.0/16
-    expose:
-      - "8332"
-      - "8333"
-      - "28332"
-      - "28333"
-
-  # — NBXplorer ——————————————————————————————————————————————————
   nbxplorer:
     image: nicolasdorier/nbxplorer:2.5.0
     container_name: fenix_nbxplorer
     restart: unless-stopped
-    depends_on:
-      - postgres
-      - bitcoin
+    env_file:
+      - .env
     volumes:
       - nbx_data:/datadir
     environment:
@@ -128,16 +126,11 @@ services:
       - NBXPLORER_DBTRIE=0
       - NBXPLORER_NETWORK=mainnet
       - NBXPLORER_BIND=0.0.0.0:32838
-      - NBXPLORER_BTCRPCURL=http://bitcoin:8332/
-      - NBXPLORER_BTCRPCUSER=fenixbtc
-      - NBXPLORER_BTCRPCPASSWORD=FenixBTC2026!
-      - NBXPLORER_BTCNODEENDPOINT=bitcoin:8333
     networks:
       - fenix_net
     expose:
       - "32838"
 
-  # — BTCPay Server ——————————————————————————————————————————————
   btcpay:
     image: btcpayserver/btcpayserver:1.13.0
     container_name: fenix_btcpay
@@ -150,18 +143,17 @@ services:
     volumes:
       - btcpay_data:/datadir
     environment:
-      BTCPAY_POSTGRES:     "User ID=${POSTGRES_USER:-fenix};Password=${POSTGRES_PASSWORD};Host=postgres;Port=5432;Database=btcpay"
-      BTCPAY_NETWORK:      ${BTCPAY_NETWORK:-mainnet}
-      BTCPAY_BIND:         0.0.0.0:49392
-      BTCPAY_ROOTPATH:     /btcpay
-      BTCPAY_NBXPLORER:    http://nbxplorer:32838
-      BTCPAY_EXTERNALURL:  https://${DOMAIN}/btcpay
+      BTCPAY_POSTGRES:    User ID=${POSTGRES_USER:-fenix};Password=${POSTGRES_PASSWORD};Host=postgres;Port=5432;Database=btcpay
+      BTCPAY_NETWORK:     ${BTCPAY_NETWORK:-mainnet}
+      BTCPAY_BIND:        0.0.0.0:49392
+      BTCPAY_ROOTPATH:    /btcpay
+      BTCPAY_NBXPLORER:   http://nbxplorer:32838
+      BTCPAY_EXTERNALURL: https://${DOMAIN}/btcpay
     networks:
       - fenix_net
     expose:
       - "49392"
 
-  # — Nginx (reverse proxy + SSL) ————————————————————————————————
   nginx:
     image: nginx:1.25-alpine
     container_name: fenix_nginx
@@ -176,7 +168,6 @@ services:
       - "443:443"
     volumes:
       - ./nginx/nginx_v2.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/static:/etc/nginx/static:ro
       - /etc/letsencrypt:/etc/letsencrypt:ro
     networks:
       - fenix_net

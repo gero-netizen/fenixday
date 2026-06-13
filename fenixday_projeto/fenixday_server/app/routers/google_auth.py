@@ -1,118 +1,71 @@
 """
-FênixDay — Endpoint de autenticação com Google OAuth2
-=====================================================
-POST /api/v1/auth/google
-  Recebe o idToken do Google Sign-In (Flutter) e:
-    1. Verifica o token com a API do Google
-    2. Cria o usuário se não existir (first login)
-    3. Retorna JWT FênixDay com license_status embutido
-
-Dependência: pip install google-auth
+FênixDay — Google OAuth2 Router
+Valida o idToken do Google e cria/autentica o usuário.
 """
-
 from __future__ import annotations
-
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, HTTPException
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as google_id_token
-from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from datetime import datetime, timezone
+import uuid, httpx
 
-from app.config import settings
 from app.database import get_db
-from app.models.models import User, License, LicenseStatus
-from app.security import create_access_token, hash_password
-from app.schemas.schemas import TokenResponse
+from app.models.models import User, License, LicenseStatus, Subscription
+from app.security.security_base import create_access_token
+from app.config import settings
 
 router = APIRouter()
 
-# Client ID do projeto no Google Cloud Console
-# Configurar em .env: GOOGLE_CLIENT_ID=xxx.apps.googleusercontent.com
-GOOGLE_CLIENT_ID = settings.GOOGLE_CLIENT_ID
+
+async def verify_google_token(id_token: str) -> dict:
+    """Verifica o idToken com a API do Google."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
+        )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=401, detail="Token Google inválido.")
+        data = resp.json()
+        if data.get("aud") != settings.GOOGLE_CLIENT_ID and settings.GOOGLE_CLIENT_ID:
+            raise HTTPException(status_code=401, detail="Token não pertence a este app.")
+        return data
 
 
-class GoogleAuthRequest(BaseModel):
-    id_token: str     # token retornado pelo google_sign_in Flutter
-
-
-@router.post("/google", response_model=TokenResponse)
+@router.post("/google")
 async def google_login(
-    payload: GoogleAuthRequest,
+    payload: dict,
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Autentica o usuário via Google OAuth2.
+    id_token = payload.get("id_token", "")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="id_token obrigatório.")
 
-    Fluxo:
-      1. Flutter chama googleSignIn.signIn() → obtém idToken
-      2. Flutter envia idToken para este endpoint
-      3. Servidor valida o token com o Google
-      4. Cria ou recupera o usuário no banco
-      5. Retorna JWT FênixDay
-    """
-    # ── 1. Verificar token com o Google ──────────────────────────────────
-    try:
-        id_info = google_id_token.verify_oauth2_token(
-            payload.id_token,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"Token Google inválido: {e}")
+    info = await verify_google_token(id_token)
+    email     = info.get("email")
+    google_id = info.get("sub")
 
-    email  = id_info.get("email")
-    name   = id_info.get("name", "")
-    google_id = id_info.get("sub")
+    if not email or not google_id:
+        raise HTTPException(status_code=401, detail="Dados insuficientes do Google.")
 
-    if not email:
-        raise HTTPException(status_code=400, detail="E-mail não disponível no token Google.")
-
-    # ── 2. Buscar ou criar usuário ────────────────────────────────────────
+    # Buscar ou criar usuário
     result = await db.execute(select(User).where(User.email == email))
-    user: User | None = result.scalar_one_or_none()
+    user   = result.scalar_one_or_none()
 
     if not user:
-        # Primeiro login com Google — cria conta automaticamente
         user = User(
-            email=email,
-            hashed_password=hash_password(google_id),  # senha inutilizável
-            is_active=True,
-            google_id=google_id,
-            display_name=name,
+            id=uuid.uuid4(), email=email, google_id=google_id,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
         )
         db.add(user)
+        db.add(License(id=uuid.uuid4(), user_id=user.id,
+                       status=LicenseStatus.PENDING,
+                       created_at=datetime.now(timezone.utc)))
+        db.add(Subscription(id=uuid.uuid4(), user_id=user.id,
+                            current_tier='exempt',
+                            created_at=datetime.now(timezone.utc),
+                            updated_at=datetime.now(timezone.utc)))
         await db.flush()
 
-        # Licença PENDING criada automaticamente
-        lic = License(user_id=user.id, status=LicenseStatus.PENDING)
-        db.add(lic)
-        await db.commit()
-        await db.refresh(user)
-    else:
-        # Atualizar google_id se ainda não estiver salvo
-        if not getattr(user, 'google_id', None):
-            user.google_id = google_id
-        user.last_login = datetime.now(timezone.utc)
-        await db.commit()
-
-    # ── 3. Gerar JWT FênixDay ─────────────────────────────────────────────
-    license_status = user.license.status if user.license else LicenseStatus.PENDING
-    is_lifetime    = user.license.is_lifetime if user.license else False
-
-    token = create_access_token(
-        subject=str(user.id),
-        extra_claims={
-            "license_status": license_status.value,
-            "is_lifetime":    is_lifetime,
-            "auth_provider":  "google",
-        },
-    )
-
-    return TokenResponse(
-        access_token=token,
-        license_status=license_status,
-        is_lifetime=is_lifetime,
-    )
+    token = create_access_token({"sub": str(user.id), "email": user.email})
+    return {"access_token": token, "token_type": "bearer"}
