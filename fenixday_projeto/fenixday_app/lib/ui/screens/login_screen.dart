@@ -1,18 +1,15 @@
 /// FênixDay — Tela de Login
-///
-/// Suporta dois métodos de autenticação:
-///   1. Login com Google (OAuth2 via google_sign_in)
-///   2. E-mail e senha (JWT via FastAPI)
-///
-/// Após login bem-sucedido, verifica license_status do JWT:
-///   • PENDING/EXPIRED → Modo Demo
-///   • ACTIVE/LIFETIME → Modo Real
-
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
+
+const _baseUrl = 'https://fenixday.info/api/v1';
 
 // ── Provider de autenticação ──────────────────────────────────────────────────
 
@@ -23,19 +20,26 @@ class _AuthState {
   final bool isLoading;
   final String? error;
   final bool isGoogleLoading;
+  final bool success;
 
   const _AuthState({
     this.isLoading = false,
     this.error,
     this.isGoogleLoading = false,
+    this.success = false,
   });
 
   _AuthState copyWith({
-    bool? isLoading, String? error, bool? isGoogleLoading,
-  }) => _AuthState(
-        isLoading:       isLoading       ?? this.isLoading,
-        error:           error,
+    bool? isLoading,
+    String? error,
+    bool? isGoogleLoading,
+    bool? success,
+  }) =>
+      _AuthState(
+        isLoading: isLoading ?? this.isLoading,
+        error: error,
         isGoogleLoading: isGoogleLoading ?? this.isGoogleLoading,
+        success: success ?? this.success,
       );
 }
 
@@ -44,7 +48,12 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
 
   final _googleSignIn = GoogleSignIn(scopes: ['email', 'profile']);
 
-  Future<void> signInWithGoogle(BuildContext context) async {
+  Future<void> _saveToken(String token) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('access_token', token);
+  }
+
+  Future<void> signInWithGoogle() async {
     state = state.copyWith(isGoogleLoading: true);
     try {
       final account = await _googleSignIn.signIn();
@@ -53,9 +62,23 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
         return;
       }
       final auth = await account.authentication;
-      // TODO: enviar auth.idToken para POST /api/v1/auth/google
-      // e receber JWT + license_status
-      state = state.copyWith(isGoogleLoading: false);
+      final idToken = auth.idToken;
+      if (idToken == null) throw Exception('Token Google inválido');
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl/auth/google'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'id_token': idToken}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        await _saveToken(data['access_token']);
+        state = state.copyWith(isGoogleLoading: false, success: true);
+      } else {
+        final data = jsonDecode(response.body);
+        throw Exception(data['detail'] ?? 'Erro no login com Google');
+      }
     } catch (e) {
       state = state.copyWith(
         isGoogleLoading: false,
@@ -64,17 +87,34 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
     }
   }
 
-  Future<void> signInWithEmail(
-      BuildContext context, String email, String password) async {
-    state = state.copyWith(isLoading: true);
+  Future<void> signInWithEmail(String email, String password) async {
+    if (email.isEmpty || password.isEmpty) {
+      state = state.copyWith(error: 'Preencha e-mail e senha.');
+      return;
+    }
+    state = state.copyWith(isLoading: true, error: null);
     try {
-      // TODO: POST /api/v1/auth/login
-      await Future.delayed(const Duration(seconds: 1));
-      state = state.copyWith(isLoading: false);
+      final response = await http.post(
+        Uri.parse('$_baseUrl/auth/login'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'password': password}),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        await _saveToken(data['access_token']);
+        state = state.copyWith(isLoading: false, success: true);
+      } else {
+        final data = jsonDecode(response.body);
+        state = state.copyWith(
+          isLoading: false,
+          error: data['detail'] ?? 'E-mail ou senha incorretos.',
+        );
+      }
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
-        error: 'E-mail ou senha incorretos.',
+        error: 'Erro de conexão. Verifique sua internet.',
       );
     }
   }
@@ -90,9 +130,9 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
-  final _emailCtrl    = TextEditingController();
+  final _emailCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
-  bool _showPassword  = false;
+  bool _showPassword = false;
   bool _showEmailForm = false;
 
   @override
@@ -106,6 +146,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Widget build(BuildContext context) {
     final auth = ref.watch(_authProvider);
 
+    // Navega para dashboard quando login bem-sucedido
+    ref.listen<_AuthState>(_authProvider, (prev, next) {
+      if (next.success && mounted) {
+        context.go('/dashboard');
+      }
+    });
+
     return Scaffold(
       backgroundColor: FenixColors.bg,
       body: SafeArea(
@@ -115,12 +162,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             child: Column(
               children: [
                 const SizedBox(height: 60),
-
-                // ── Logo ─────────────────────────────────────────────────
                 _Logo(),
                 const SizedBox(height: 40),
-
-                // ── Card principal ────────────────────────────────────────
                 Container(
                   width: double.infinity,
                   constraints: const BoxConstraints(maxWidth: 400),
@@ -128,8 +171,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   decoration: BoxDecoration(
                     color: FenixColors.surface,
                     borderRadius: BorderRadius.circular(12),
-                    border: Border.all(
-                        color: FenixColors.border, width: 0.5),
+                    border: Border.all(color: FenixColors.border, width: 0.5),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -145,71 +187,50 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       const SizedBox(height: 6),
                       const Text(
                         'Bem-vindo ao FênixDay. Escolha como deseja entrar.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: FenixColors.textMuted,
-                        ),
+                        style: TextStyle(fontSize: 12, color: FenixColors.textMuted),
                       ),
                       const SizedBox(height: 24),
-
-                      // ── Botão Google ────────────────────────────────────
                       _GoogleSignInButton(
                         isLoading: auth.isGoogleLoading,
-                        onTap: () => ref
-                            .read(_authProvider.notifier)
-                            .signInWithGoogle(context),
+                        onTap: () => ref.read(_authProvider.notifier).signInWithGoogle(),
                       ),
                       const SizedBox(height: 16),
-
-                      // ── Divisor ─────────────────────────────────────────
                       Row(
                         children: [
                           const Expanded(
-                            child: Divider(
-                                color: FenixColors.border, thickness: 0.5),
+                            child: Divider(color: FenixColors.border, thickness: 0.5),
                           ),
-                          Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            child: Text(
-                              'ou continue com e-mail',
-                              style: const TextStyle(
-                                  fontSize: 11,
-                                  color: FenixColors.textMuted),
-                            ),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 12),
+                            child: Text('ou continue com e-mail',
+                                style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
                           ),
                           const Expanded(
-                            child: Divider(
-                                color: FenixColors.border, thickness: 0.5),
+                            child: Divider(color: FenixColors.border, thickness: 0.5),
                           ),
                         ],
                       ),
                       const SizedBox(height: 16),
-
-                      // ── Formulário e-mail/senha ──────────────────────────
                       AnimatedCrossFade(
                         firstChild: _EmailToggleButton(
-                          onTap: () =>
-                              setState(() => _showEmailForm = true),
+                          onTap: () => setState(() => _showEmailForm = true),
                         ),
                         secondChild: _EmailForm(
-                          emailCtrl:    _emailCtrl,
+                          emailCtrl: _emailCtrl,
                           passwordCtrl: _passwordCtrl,
                           showPassword: _showPassword,
-                          isLoading:    auth.isLoading,
+                          isLoading: auth.isLoading,
                           onTogglePassword: () =>
                               setState(() => _showPassword = !_showPassword),
                           onLogin: () => ref
                               .read(_authProvider.notifier)
-                              .signInWithEmail(context,
-                                  _emailCtrl.text, _passwordCtrl.text),
+                              .signInWithEmail(_emailCtrl.text, _passwordCtrl.text),
                         ),
                         crossFadeState: _showEmailForm
                             ? CrossFadeState.showSecond
                             : CrossFadeState.showFirst,
                         duration: const Duration(milliseconds: 250),
                       ),
-
-                      // ── Erro ─────────────────────────────────────────────
                       if (auth.error != null) ...[
                         const SizedBox(height: 12),
                         _ErrorBanner(message: auth.error!),
@@ -217,20 +238,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     ],
                   ),
                 ),
-
                 const SizedBox(height: 20),
-
-                // ── Link de cadastro ──────────────────────────────────────
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     const Text('Não tem conta? ',
-                        style: TextStyle(
-                            fontSize: 12, color: FenixColors.textMuted)),
+                        style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
                     GestureDetector(
-                      onTap: () {
-                        // TODO: navegar para RegisterScreen
-                      },
+                      onTap: () {},
                       child: const Text(
                         'Criar conta grátis',
                         style: TextStyle(
@@ -242,14 +257,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     ),
                   ],
                 ),
-
                 const SizedBox(height: 12),
-
-                // ── Modo Demo sem conta ───────────────────────────────────
                 GestureDetector(
-                  onTap: () {
-                    // TODO: entrar em modo demo sem autenticar
-                  },
+                  onTap: () => context.go('/dashboard'),
                   child: const Text(
                     'Experimentar em Modo Demo sem conta',
                     style: TextStyle(
@@ -259,10 +269,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     ),
                   ),
                 ),
-
                 const SizedBox(height: 40),
-
-                // ── Disclaimer LGPD ───────────────────────────────────────
                 const _LgpdDisclaimer(),
                 const SizedBox(height: 24),
               ],
@@ -282,12 +289,12 @@ class _Logo extends StatelessWidget {
     return Column(
       children: [
         Container(
-          width: 56, height: 56,
+          width: 56,
+          height: 56,
           decoration: BoxDecoration(
             color: FenixColors.yellowBg,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-                color: FenixColors.yellow.withOpacity(0.3), width: 0.5),
+            border: Border.all(color: FenixColors.yellow.withOpacity(0.3), width: 0.5),
           ),
           child: const Center(
             child: Text('Fx',
@@ -305,19 +312,11 @@ class _Logo extends StatelessWidget {
             children: [
               TextSpan(
                 text: 'Fênix',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w500,
-                  color: FenixColors.yellow,
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w500, color: FenixColors.yellow),
               ),
               TextSpan(
                 text: 'Day',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w500,
-                  color: FenixColors.textPrimary,
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w500, color: FenixColors.textPrimary),
               ),
             ],
           ),
@@ -354,24 +353,19 @@ class _GoogleSignInButton extends StatelessWidget {
         child: isLoading
             ? const Center(
                 child: SizedBox(
-                  width: 18, height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 1.5, color: FenixColors.textMuted),
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 1.5, color: FenixColors.textMuted),
                 ),
               )
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Ícone Google (SVG simplificado via CustomPaint)
                   _GoogleIcon(),
                   const SizedBox(width: 10),
                   const Text(
                     'Continuar com Google',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: FenixColors.textPrimary,
-                    ),
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: FenixColors.textPrimary),
                   ),
                 ],
               ),
@@ -383,10 +377,7 @@ class _GoogleSignInButton extends StatelessWidget {
 class _GoogleIcon extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 18, height: 18,
-      child: CustomPaint(painter: _GoogleIconPainter()),
-    );
+    return SizedBox(width: 18, height: 18, child: CustomPaint(painter: _GoogleIconPainter()));
   }
 }
 
@@ -395,40 +386,18 @@ class _GoogleIconPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final c = Offset(size.width / 2, size.height / 2);
     final r = size.width / 2;
-
-    // Círculo base
-    canvas.drawCircle(c, r,
-        Paint()..color = const Color(0xFFEEEEEE));
-
-    // Letras G simplificadas como arco colorido
+    canvas.drawCircle(c, r, Paint()..color = const Color(0xFFEEEEEE));
     final rect = Rect.fromCircle(center: c, radius: r * 0.75);
-    canvas.drawArc(rect, -0.5, 2.1, false,
-        Paint()
-          ..color = const Color(0xFF4285F4)
-          ..strokeWidth = 2.5
-          ..style = PaintingStyle.stroke);
-    canvas.drawArc(rect, 1.6, 1.0, false,
-        Paint()
-          ..color = const Color(0xFF34A853)
-          ..strokeWidth = 2.5
-          ..style = PaintingStyle.stroke);
-    canvas.drawArc(rect, 2.6, 1.2, false,
-        Paint()
-          ..color = const Color(0xFFFBBC05)
-          ..strokeWidth = 2.5
-          ..style = PaintingStyle.stroke);
-    canvas.drawArc(rect, 3.8, 1.0, false,
-        Paint()
-          ..color = const Color(0xFFEA4335)
-          ..strokeWidth = 2.5
-          ..style = PaintingStyle.stroke);
+    canvas.drawArc(rect, -0.5, 2.1, false, Paint()..color = const Color(0xFF4285F4)..strokeWidth = 2.5..style = PaintingStyle.stroke);
+    canvas.drawArc(rect, 1.6, 1.0, false, Paint()..color = const Color(0xFF34A853)..strokeWidth = 2.5..style = PaintingStyle.stroke);
+    canvas.drawArc(rect, 2.6, 1.2, false, Paint()..color = const Color(0xFFFBBC05)..strokeWidth = 2.5..style = PaintingStyle.stroke);
+    canvas.drawArc(rect, 3.8, 1.0, false, Paint()..color = const Color(0xFFEA4335)..strokeWidth = 2.5..style = PaintingStyle.stroke);
   }
-
   @override
   bool shouldRepaint(_) => false;
 }
 
-// ── Botão toggle do formulário de e-mail ──────────────────────────────────────
+// ── Email toggle ──────────────────────────────────────────────────────────────
 
 class _EmailToggleButton extends StatelessWidget {
   final VoidCallback onTap;
@@ -449,17 +418,10 @@ class _EmailToggleButton extends StatelessWidget {
         child: const Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.mail_outline,
-                size: 16, color: FenixColors.textMuted),
+            Icon(Icons.mail_outline, size: 16, color: FenixColors.textMuted),
             SizedBox(width: 8),
-            Text(
-              'Entrar com e-mail e senha',
-              style: TextStyle(
-                fontSize: 13,
-                color: FenixColors.textSecondary,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
+            Text('Entrar com e-mail e senha',
+                style: TextStyle(fontSize: 13, color: FenixColors.textSecondary, fontWeight: FontWeight.w500)),
           ],
         ),
       ),
@@ -467,7 +429,7 @@ class _EmailToggleButton extends StatelessWidget {
   }
 }
 
-// ── Formulário e-mail/senha ───────────────────────────────────────────────────
+// ── Formulário ────────────────────────────────────────────────────────────────
 
 class _EmailForm extends StatelessWidget {
   final TextEditingController emailCtrl;
@@ -490,39 +452,29 @@ class _EmailForm extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // E-mail
         TextField(
           controller: emailCtrl,
           keyboardType: TextInputType.emailAddress,
-          style: const TextStyle(
-              fontSize: 13, color: FenixColors.textPrimary),
+          style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
           decoration: const InputDecoration(
             hintText: 'seu@email.com',
             hintStyle: TextStyle(color: FenixColors.textMuted),
-            prefixIcon: Icon(Icons.mail_outline,
-                size: 16, color: FenixColors.textMuted),
+            prefixIcon: Icon(Icons.mail_outline, size: 16, color: FenixColors.textMuted),
           ),
         ),
         const SizedBox(height: 10),
-
-        // Senha
         TextField(
           controller: passwordCtrl,
           obscureText: !showPassword,
-          style: const TextStyle(
-              fontSize: 13, color: FenixColors.textPrimary),
+          style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
           decoration: InputDecoration(
             hintText: 'Senha',
-            hintStyle:
-                const TextStyle(color: FenixColors.textMuted),
-            prefixIcon: const Icon(Icons.lock_outline,
-                size: 16, color: FenixColors.textMuted),
+            hintStyle: const TextStyle(color: FenixColors.textMuted),
+            prefixIcon: const Icon(Icons.lock_outline, size: 16, color: FenixColors.textMuted),
             suffixIcon: GestureDetector(
               onTap: onTogglePassword,
               child: Icon(
-                showPassword
-                    ? Icons.visibility_off_outlined
-                    : Icons.visibility_outlined,
+                showPassword ? Icons.visibility_off_outlined : Icons.visibility_outlined,
                 size: 16,
                 color: FenixColors.textMuted,
               ),
@@ -531,24 +483,15 @@ class _EmailForm extends StatelessWidget {
           onSubmitted: (_) => onLogin(),
         ),
         const SizedBox(height: 6),
-
-        // Esqueci a senha
         Align(
           alignment: Alignment.centerRight,
           child: GestureDetector(
-            onTap: () {
-              // TODO: navegar para ForgotPasswordScreen
-            },
-            child: const Text(
-              'Esqueci minha senha',
-              style: TextStyle(
-                  fontSize: 11, color: FenixColors.yellow),
-            ),
+            onTap: () {},
+            child: const Text('Esqueci minha senha',
+                style: TextStyle(fontSize: 11, color: FenixColors.yellow)),
           ),
         ),
         const SizedBox(height: 16),
-
-        // Botão entrar
         SizedBox(
           width: double.infinity,
           child: ElevatedButton(
@@ -556,23 +499,17 @@ class _EmailForm extends StatelessWidget {
               backgroundColor: FenixColors.yellow,
               foregroundColor: const Color(0xFF1A0A00),
               padding: const EdgeInsets.symmetric(vertical: 13),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(8)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
               elevation: 0,
             ),
             onPressed: isLoading ? null : onLogin,
             child: isLoading
                 ? const SizedBox(
-                    width: 18, height: 18,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 1.5,
-                        color: Color(0xFF1A0A00)),
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 1.5, color: Color(0xFF1A0A00)),
                   )
-                : const Text(
-                    'Entrar',
-                    style: TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.w600),
-                  ),
+                : const Text('Entrar', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           ),
         ),
       ],
@@ -593,18 +530,14 @@ class _ErrorBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: FenixColors.redBg,
         borderRadius: BorderRadius.circular(6),
-        border: Border.all(
-            color: FenixColors.red.withOpacity(0.3), width: 0.5),
+        border: Border.all(color: FenixColors.red.withOpacity(0.3), width: 0.5),
       ),
       child: Row(
         children: [
-          const Icon(Icons.error_outline,
-              size: 14, color: FenixColors.red),
+          const Icon(Icons.error_outline, size: 14, color: FenixColors.red),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(message,
-                style: const TextStyle(
-                    fontSize: 11, color: FenixColors.red)),
+            child: Text(message, style: const TextStyle(fontSize: 11, color: FenixColors.red)),
           ),
         ],
       ),
@@ -625,11 +558,7 @@ class _LgpdDisclaimer extends StatelessWidget {
         'Ao entrar, você concorda com nossos Termos de Uso e Política de Privacidade. '
         'Seus dados são protegidos conforme a LGPD (Lei 13.709/2018).',
         textAlign: TextAlign.center,
-        style: TextStyle(
-          fontSize: 10,
-          color: FenixColors.textMuted,
-          height: 1.5,
-        ),
+        style: TextStyle(fontSize: 10, color: FenixColors.textMuted, height: 1.5),
       ),
     );
   }

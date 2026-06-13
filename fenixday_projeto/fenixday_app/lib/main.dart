@@ -7,7 +7,6 @@
 ///   • Redirect automático para login se não autenticado
 
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -32,15 +31,7 @@ final authProvider = StateProvider<bool>((ref) => false);
 
 final _router = GoRouter(
   initialLocation: '/login',
-  redirect: (context, state) async {
-    final prefs = await SharedPreferences.getInstance();
-    final token = prefs.getString('access_token');
-    final isLoggedIn = token != null && token.isNotEmpty;
-    final isOnLogin = state.matchedLocation == '/login';
-    if (!isLoggedIn && !isOnLogin) return '/login';
-    if (isLoggedIn && isOnLogin) return '/dashboard';
-    return null;
-  },
+  redirect: (context, state) => null,
   routes: [
     // Auth
     GoRoute(
