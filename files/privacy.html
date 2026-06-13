@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Política de Privacidade – FênixDay</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #0f0f13;
+      color: #d0d0d8;
+      line-height: 1.75;
+      padding: 48px 24px;
+    }
+    .container { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 2rem; color: #f0a500; margin-bottom: 8px; }
+    .subtitle { font-size: 0.9rem; color: #888; margin-bottom: 48px; }
+    h2 { font-size: 1.1rem; color: #f0a500; margin: 36px 0 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    p { margin-bottom: 14px; }
+    ul { padding-left: 20px; margin-bottom: 14px; }
+    li { margin-bottom: 6px; }
+    a { color: #f0a500; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 0.9rem; }
+    th { background: #1a1a24; color: #f0a500; text-align: left; padding: 10px 12px; }
+    td { padding: 10px 12px; border-bottom: 1px solid #2a2a35; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Política de Privacidade</h1>
+  <p class="subtitle">FênixDay &nbsp;·&nbsp; Última atualização: junho de 2026</p>
+
+  <h2>1. Introdução</h2>
+  <p>Esta Política de Privacidade descreve como o FênixDay ("nós", "Plataforma") coleta, usa, armazena e protege os dados pessoais dos Usuários, em conformidade com a Lei Geral de Proteção de Dados (LGPD – Lei nº 13.709/2018).</p>
+  <p>Ao utilizar a Plataforma, você consente com as práticas descritas neste documento.</p>
+
+  <h2>2. Dados que Coletamos</h2>
+  <table>
+    <tr>
+      <th>Dado</th>
+      <th>Finalidade</th>
+      <th>Base Legal (LGPD)</th>
+    </tr>
+    <tr>
+      <td>Nome e e-mail</td>
+      <td>Criação e gestão da conta</td>
+      <td>Execução de contrato</td>
+    </tr>
+    <tr>
+      <td>Foto de perfil (Google)</td>
+      <td>Identificação visual na interface</td>
+      <td>Consentimento</td>
+    </tr>
+    <tr>
+      <td>Endereço de e-mail verificado</td>
+      <td>Comunicações e recuperação de acesso</td>
+      <td>Execução de contrato</td>
+    </tr>
+    <tr>
+      <td>Dados de pagamento (hash de transação BTC)</td>
+      <td>Comprovação de assinatura</td>
+      <td>Execução de contrato</td>
+    </tr>
+    <tr>
+      <td>Logs de acesso (IP, timestamp)</td>
+      <td>Segurança e prevenção a fraudes</td>
+      <td>Legítimo interesse</td>
+    </tr>
+    <tr>
+      <td>Configurações de bots (pares, parâmetros)</td>
+      <td>Funcionamento do serviço</td>
+      <td>Execução de contrato</td>
+    </tr>
+  </table>
+
+  <h2>3. Dados que NÃO Coletamos</h2>
+  <p>O FênixDay <strong>não coleta, não armazena e não tem acesso</strong> a:</p>
+  <ul>
+    <li>Chaves de API de exchanges (armazenadas somente no dispositivo do Usuário);</li>
+    <li>Senhas de exchanges;</li>
+    <li>Chaves privadas de carteiras de criptoativos;</li>
+    <li>Dados financeiros além dos necessários para confirmar o pagamento da assinatura.</li>
+  </ul>
+
+  <h2>4. Uso dos Dados</h2>
+  <p>Os dados coletados são utilizados exclusivamente para:</p>
+  <ul>
+    <li>Autenticar e gerenciar sua conta;</li>
+    <li>Processar e verificar pagamentos de assinatura;</li>
+    <li>Enviar notificações transacionais (confirmação de pagamento, alertas de segurança);</li>
+    <li>Melhorar a estabilidade e segurança da Plataforma;</li>
+    <li>Cumprir obrigações legais.</li>
+  </ul>
+  <p>Não utilizamos seus dados para publicidade de terceiros nem os vendemos.</p>
+
+  <h2>5. Compartilhamento de Dados</h2>
+  <p>Seus dados podem ser compartilhados somente com:</p>
+  <ul>
+    <li><strong>Google LLC</strong> — para autenticação via Google OAuth2, sujeito à <a href="https://policies.google.com/privacy" target="_blank">Política de Privacidade do Google</a>;</li>
+    <li><strong>Autoridades competentes</strong> — quando exigido por lei ou ordem judicial.</li>
+  </ul>
+  <p>Não há transferência de dados para outros terceiros.</p>
+
+  <h2>6. Retenção de Dados</h2>
+  <p>Os dados são mantidos enquanto a conta estiver ativa. Após o encerramento da conta:</p>
+  <ul>
+    <li>Dados de identificação são excluídos em até 30 dias;</li>
+    <li>Logs de acesso são mantidos por até 6 meses para fins de segurança;</li>
+    <li>Registros de pagamento são mantidos por 5 anos para fins fiscais e legais.</li>
+  </ul>
+
+  <h2>7. Segurança</h2>
+  <p>Adotamos as seguintes medidas técnicas para proteger seus dados:</p>
+  <ul>
+    <li>Comunicação exclusivamente via HTTPS/TLS;</li>
+    <li>Senhas armazenadas com hash bcrypt;</li>
+    <li>Tokens JWT com expiração curta e blacklist via Redis;</li>
+    <li>Proteção WAF via Cloudflare;</li>
+    <li>Acesso ao servidor restrito por chave SSH.</li>
+  </ul>
+
+  <h2>8. Seus Direitos (LGPD)</h2>
+  <p>Nos termos da LGPD, você tem direito a:</p>
+  <ul>
+    <li><strong>Acesso</strong> — solicitar cópia dos dados que mantemos sobre você;</li>
+    <li><strong>Correção</strong> — solicitar correção de dados incompletos ou incorretos;</li>
+    <li><strong>Exclusão</strong> — solicitar a exclusão dos seus dados pessoais;</li>
+    <li><strong>Portabilidade</strong> — receber seus dados em formato estruturado;</li>
+    <li><strong>Revogação do consentimento</strong> — para dados baseados em consentimento;</li>
+    <li><strong>Oposição</strong> — opor-se ao tratamento baseado em legítimo interesse.</li>
+  </ul>
+  <p>Para exercer qualquer desses direitos, entre em contato pelo e-mail <a href="mailto:gero@fenixday.info">gero@fenixday.info</a>. Responderemos em até 15 dias úteis.</p>
+
+  <h2>9. Cookies</h2>
+  <p>O aplicativo móvel não utiliza cookies. A versão web pode utilizar cookies estritamente necessários para manter a sessão autenticada. Não utilizamos cookies de rastreamento ou publicidade.</p>
+
+  <h2>10. Menores de Idade</h2>
+  <p>A Plataforma não é destinada a menores de 18 anos. Não coletamos intencionalmente dados de menores. Se identificarmos tal situação, a conta será encerrada e os dados excluídos.</p>
+
+  <h2>11. Alterações nesta Política</h2>
+  <p>Esta Política pode ser atualizada periodicamente. Notificaremos Usuários por e-mail ou notificação na Plataforma com antecedência mínima de 15 dias em caso de alterações materiais.</p>
+
+  <h2>12. Contato e Encarregado (DPO)</h2>
+  <p>Responsável pelo tratamento de dados:</p>
+  <ul>
+    <li><strong>Titular:</strong> Jeronimo (pessoa física)</li>
+    <li><strong>E-mail:</strong> <a href="mailto:gero@fenixday.info">gero@fenixday.info</a></li>
+    <li><strong>Plataforma:</strong> <a href="https://fenixday.info">fenixday.info</a></li>
+  </ul>
+
+</div>
+</body>
+</html>
