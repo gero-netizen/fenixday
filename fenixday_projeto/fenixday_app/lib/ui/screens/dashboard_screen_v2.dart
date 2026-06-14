@@ -1,4 +1,4 @@
-/// FênixDay — Dashboard P&L v2 (integrado com API real)
+/// FênixDay — Dashboard P&L v2 (dados reais da Binance)
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -9,17 +9,17 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
+import 'services/binance_service.dart';
 
 const _baseUrl = 'https://fenixday.info/api/v1';
 
-// ── Modelo de usuário ─────────────────────────────────────────────────────────
+// ── Provider de usuário ───────────────────────────────────────────────────────
 
 class _UserInfo {
   final String email;
   final bool isActive;
   final bool isSuperuser;
   final bool realModeAllowed;
-
   const _UserInfo({
     required this.email,
     required this.isActive,
@@ -28,12 +28,8 @@ class _UserInfo {
   });
 }
 
-// ── Provider de usuário ───────────────────────────────────────────────────────
-
 class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
-  _UserNotifier() : super(const AsyncValue.loading()) {
-    load();
-  }
+  _UserNotifier() : super(const AsyncValue.loading()) { load(); }
 
   Future<void> load() async {
     try {
@@ -43,25 +39,15 @@ class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
         state = AsyncValue.error('Não autenticado', StackTrace.current);
         return;
       }
-
-      // Busca dados do usuário
-      final meRes = await http.get(
-        Uri.parse('$_baseUrl/auth/me'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
-      // Busca status da subscription para saber o modo
-      final subRes = await http.get(
-        Uri.parse('$_baseUrl/subscriptions/status'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-
+      final meRes  = await http.get(Uri.parse('$_baseUrl/auth/me'),
+          headers: {'Authorization': 'Bearer $token'});
+      final subRes = await http.get(Uri.parse('$_baseUrl/subscriptions/status'),
+          headers: {'Authorization': 'Bearer $token'});
       if (meRes.statusCode == 200) {
         final me = jsonDecode(meRes.body);
         bool realMode = false;
         if (subRes.statusCode == 200) {
-          final sub = jsonDecode(subRes.body);
-          realMode = sub['real_mode_allowed'] == true;
+          realMode = jsonDecode(subRes.body)['real_mode_allowed'] == true;
         }
         state = AsyncValue.data(_UserInfo(
           email: me['email'] ?? '',
@@ -70,122 +56,37 @@ class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
           realModeAllowed: realMode,
         ));
       } else {
-        state = AsyncValue.error('Erro ao carregar usuário', StackTrace.current);
+        state = AsyncValue.error('Erro', StackTrace.current);
       }
+    } catch (e, st) { state = AsyncValue.error(e, st); }
+  }
+}
+
+final _userProvider = StateNotifierProvider<_UserNotifier, AsyncValue<_UserInfo>>(
+  (ref) => _UserNotifier(),
+);
+
+// ── Provider Binance ──────────────────────────────────────────────────────────
+
+class _BinanceNotifier extends StateNotifier<AsyncValue<BinanceDashboardData>> {
+  final _service = BinanceService();
+  _BinanceNotifier() : super(const AsyncValue.loading()) { fetch(); }
+
+  Future<void> fetch() async {
+    state = const AsyncValue.loading();
+    try {
+      final data = await _service.fetchDashboardData();
+      state = AsyncValue.data(data);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
   }
 }
 
-final _userProvider =
-    StateNotifierProvider<_UserNotifier, AsyncValue<_UserInfo>>(
-  (ref) => _UserNotifier(),
+final _binanceProvider =
+    StateNotifierProvider<_BinanceNotifier, AsyncValue<BinanceDashboardData>>(
+  (ref) => _BinanceNotifier(),
 );
-
-// ── Modelos de portfolio (mock por enquanto) ──────────────────────────────────
-
-class _PortfolioData {
-  final double capitalAlocado;
-  final double lucroGridAcumulado;
-  final double patrimonioTotal;
-  final double lucroGridHoje;
-  final double lucroGridSemana;
-  final double lucroGridMes;
-  final int ciclosHoje;
-  final int ciclosSemana;
-  final int ciclosMes;
-  final int ciclosTotal;
-  final double plDesvalorizacao;
-  final double plDesvalorizacaoPct;
-  final List<FlSpot> curvaGrid;
-  final List<FlSpot> curvaDesvalorizacao;
-  final List<_OrdemRecente> ordensRecentes;
-
-  const _PortfolioData({
-    required this.capitalAlocado,
-    required this.lucroGridAcumulado,
-    required this.patrimonioTotal,
-    required this.lucroGridHoje,
-    required this.lucroGridSemana,
-    required this.lucroGridMes,
-    required this.ciclosHoje,
-    required this.ciclosSemana,
-    required this.ciclosMes,
-    required this.ciclosTotal,
-    required this.plDesvalorizacao,
-    required this.plDesvalorizacaoPct,
-    required this.curvaGrid,
-    required this.curvaDesvalorizacao,
-    required this.ordensRecentes,
-  });
-
-  double get lucroGridHojePct =>
-      capitalAlocado > 0 ? lucroGridHoje / capitalAlocado * 100 : 0;
-  double get lucroGridSemanaPct =>
-      capitalAlocado > 0 ? lucroGridSemana / capitalAlocado * 100 : 0;
-  double get lucroGridMesPct =>
-      capitalAlocado > 0 ? lucroGridMes / capitalAlocado * 100 : 0;
-  double get lucroGridTotalPct =>
-      capitalAlocado > 0 ? lucroGridAcumulado / capitalAlocado * 100 : 0;
-}
-
-class _OrdemRecente {
-  final String symbol;
-  final String side;
-  final double price;
-  final double profitPct;
-  final double profitUsdt;
-  final String time;
-
-  const _OrdemRecente({
-    required this.symbol,
-    required this.side,
-    required this.price,
-    required this.profitPct,
-    required this.profitUsdt,
-    required this.time,
-  });
-}
-
-final _portfolioProvider = Provider<_PortfolioData>((ref) {
-  double capital = 3784.50;
-  final curvaGrid = List.generate(31, (i) {
-    final v = capital;
-    capital *= 1.0035;
-    return FlSpot(i.toDouble(), v);
-  });
-
-  double desval = 0;
-  final curvaDesval = List.generate(31, (i) {
-    desval += (i % 3 == 0 ? -12 : i % 2 == 0 ? 8 : -5);
-    return FlSpot(i.toDouble(), desval);
-  });
-
-  return _PortfolioData(
-    capitalAlocado: 3784.50,
-    lucroGridAcumulado: 342.18,
-    patrimonioTotal: 4126.68,
-    lucroGridHoje: 14.38,
-    lucroGridSemana: 89.20,
-    lucroGridMes: 342.18,
-    ciclosHoje: 12,
-    ciclosSemana: 76,
-    ciclosMes: 312,
-    ciclosTotal: 1284,
-    plDesvalorizacao: -87.42,
-    plDesvalorizacaoPct: -2.31,
-    curvaGrid: curvaGrid,
-    curvaDesvalorizacao: curvaDesval,
-    ordensRecentes: const [
-      _OrdemRecente(symbol: 'ETH/USDT', side: 'venda',  price: 1997.40, profitPct: .41, profitUsdt: 1.03, time: '14:32:01'),
-      _OrdemRecente(symbol: 'SOL/USDT', side: 'venda',  price: 158.20,  profitPct: .39, profitUsdt: .97,  time: '14:18:44'),
-      _OrdemRecente(symbol: 'BNB/USDT', side: 'venda',  price: 614.80,  profitPct: .43, profitUsdt: 1.07, time: '13:55:22'),
-      _OrdemRecente(symbol: 'MATIC/USDT', side: 'venda', price: .793,   profitPct: .38, profitUsdt: .95,  time: '13:41:09'),
-      _OrdemRecente(symbol: 'ETH/USDT', side: 'compra', price: 1988.40, profitPct: 0,   profitUsdt: 0,    time: '13:29:55'),
-    ],
-  );
-});
 
 // ── Tela ──────────────────────────────────────────────────────────────────────
 
@@ -194,120 +95,80 @@ class DashboardScreenV2 extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final data     = ref.watch(_portfolioProvider);
-    final userAsync = ref.watch(_userProvider);
-    final now      = DateFormat('dd/MM/yyyy · HH:mm:ss').format(DateTime.now());
+    final userAsync    = ref.watch(_userProvider);
+    final binanceAsync = ref.watch(_binanceProvider);
+    final now = DateFormat('dd/MM/yyyy · HH:mm:ss').format(DateTime.now());
 
     return Scaffold(
       backgroundColor: FenixColors.bg,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+        child: RefreshIndicator(
+          onRefresh: () async {
+            ref.read(_binanceProvider.notifier).fetch();
+            ref.read(_userProvider.notifier).load();
+          },
+          color: FenixColors.yellow,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(14, 14, 14, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
 
-              // ── Cabeçalho ─────────────────────────────────────────────
-              Row(children: [
-                Expanded(
-                  child: Column(
+                // ── Cabeçalho ──────────────────────────────────────────
+                Row(children: [
+                  Expanded(child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text('Performance & P&L',
-                          style: TextStyle(fontSize: 16,
-                              fontWeight: FontWeight.w500,
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500,
                               color: FenixColors.textPrimary)),
                       const SizedBox(height: 2),
-                      // Email do usuário logado
                       userAsync.when(
-                        data: (user) => Text(
-                          user.email,
-                          style: const TextStyle(
-                              fontFamily: 'RobotoMono',
-                              fontSize: 10,
-                              color: FenixColors.textMuted),
-                        ),
-                        loading: () => const SizedBox(
-                          width: 100, height: 12,
-                          child: LinearProgressIndicator(
-                              color: FenixColors.yellow, minHeight: 2),
-                        ),
-                        error: (_, __) => Text(now,
-                            style: const TextStyle(
-                                fontFamily: 'RobotoMono',
-                                fontSize: 10,
-                                color: FenixColors.textMuted)),
+                        data: (u) => Text(u.email,
+                            style: const TextStyle(fontFamily: 'RobotoMono',
+                                fontSize: 10, color: FenixColors.textMuted)),
+                        loading: () => const SizedBox(width: 100, height: 10,
+                            child: LinearProgressIndicator(color: FenixColors.yellow, minHeight: 2)),
+                        error: (_, __) => const SizedBox.shrink(),
                       ),
                       const SizedBox(height: 2),
-                      Text(now,
-                          style: const TextStyle(
-                              fontFamily: 'RobotoMono',
-                              fontSize: 10,
-                              color: FenixColors.textMuted)),
+                      Text(now, style: const TextStyle(fontFamily: 'RobotoMono',
+                          fontSize: 10, color: FenixColors.textMuted)),
                     ],
-                  ),
-                ),
-                // Badge modo real/demo baseado na subscription
-                userAsync.when(
-                  data: (user) => _ModeBadge(realMode: user.realModeAllowed),
-                  loading: () => const SizedBox(width: 80, height: 26,
-                      child: Center(child: CircularProgressIndicator(
-                          strokeWidth: 1.5, color: FenixColors.yellow))),
-                  error: (_, __) => const _ModeBadge(realMode: false),
-                ),
-              ]),
-              const SizedBox(height: 14),
-
-              // ── 1. PATRIMÔNIO TOTAL ────────────────────────────────────
-              _SectionTitle('Patrimônio total em operação'),
-              const SizedBox(height: 6),
-              _PatrimonioCard(data: data),
-              const SizedBox(height: 14),
-
-              // ── 2. LUCRO DE GRID ──────────────────────────────────────
-              _SectionTitle('Lucro de grid — ciclos fechados'),
-              const SizedBox(height: 6),
-              _LucroGridSection(data: data),
-              const SizedBox(height: 14),
-
-              // ── 3. CURVA DE EVOLUÇÃO ──────────────────────────────────
-              _SectionTitle('Evolução do lucro de grid — juros compostos'),
-              const SizedBox(height: 6),
-              _CurvaGridCard(data: data),
-              const SizedBox(height: 14),
-
-              // ── 4. DESVALORIZAÇÃO ─────────────────────────────────────
-              _SectionTitle('P&L de desvalorização — posições abertas'),
-              const SizedBox(height: 6),
-              _DesvalorizacaoCard(data: data),
-              const SizedBox(height: 14),
-
-              // ── 5. ORDENS RECENTES ────────────────────────────────────
-              _SectionTitle('Ordens recentes'),
-              const SizedBox(height: 6),
-              _OrdensCard(data: data),
-
-              // ── Aviso dados mock ──────────────────────────────────────
-              const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: FenixColors.yellowBg,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                      color: FenixColors.yellow.withOpacity(.3), width: .5),
-                ),
-                child: const Row(children: [
-                  Icon(Icons.info_outline, size: 13, color: FenixColors.yellow),
-                  SizedBox(width: 8),
-                  Expanded(child: Text(
-                    'Os dados de P&L e ordens são simulados. '
-                    'A integração com a Binance será ativada em breve.',
-                    style: TextStyle(fontSize: 10, color: FenixColors.yellow, height: 1.4),
                   )),
+                  userAsync.when(
+                    data: (u) => _ModeBadge(realMode: u.realModeAllowed),
+                    loading: () => const SizedBox(width: 80, height: 26,
+                        child: Center(child: CircularProgressIndicator(
+                            strokeWidth: 1.5, color: FenixColors.yellow))),
+                    error: (_, __) => const _ModeBadge(realMode: false),
+                  ),
                 ]),
-              ),
-            ],
+                const SizedBox(height: 14),
+
+                // ── Conteúdo Binance ────────────────────────────────────
+                binanceAsync.when(
+                  loading: () => const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(40),
+                      child: Column(children: [
+                        CircularProgressIndicator(color: FenixColors.yellow),
+                        SizedBox(height: 16),
+                        Text('Buscando dados da Binance...',
+                            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+                      ]),
+                    ),
+                  ),
+                  error: (e, _) => _ErrorCard(message: e.toString(),
+                      onRetry: () => ref.read(_binanceProvider.notifier).fetch()),
+                  data: (data) => data.error != null
+                      ? _ErrorCard(message: data.error!,
+                          onRetry: () => ref.read(_binanceProvider.notifier).fetch())
+                      : _DashboardContent(data: data),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -315,45 +176,91 @@ class DashboardScreenV2 extends ConsumerWidget {
   }
 }
 
-// ── Badge modo ────────────────────────────────────────────────────────────────
+// ── Conteúdo do dashboard ─────────────────────────────────────────────────────
 
-class _ModeBadge extends StatelessWidget {
-  final bool realMode;
-  const _ModeBadge({required this.realMode});
+class _DashboardContent extends StatelessWidget {
+  final BinanceDashboardData data;
+  const _DashboardContent({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    final color   = realMode ? FenixColors.green : FenixColors.orange;
-    final colorBg = realMode ? FenixColors.greenBg : FenixColors.orangeBg;
-    final label   = realMode ? 'MODO REAL' : 'MODO DEMO';
+    final fmt = NumberFormat('#,##0.00', 'pt_BR');
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: colorBg,
-        borderRadius: BorderRadius.circular(5),
-        border: Border.all(color: color.withOpacity(.3), width: .5),
-      ),
-      child: Row(children: [
-        Icon(Icons.circle, size: 7, color: color),
-        const SizedBox(width: 5),
-        Text(label,
-            style: TextStyle(fontFamily: 'RobotoMono',
-                fontSize: 9, fontWeight: FontWeight.w700, color: color)),
-      ]),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+
+        // Badge testnet
+        if (data.isTestnet)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: FenixColors.orangeBg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: FenixColors.orange.withOpacity(.3), width: .5),
+            ),
+            child: const Row(children: [
+              Icon(Icons.science_outlined, size: 13, color: FenixColors.orange),
+              SizedBox(width: 6),
+              Text('TESTNET — dados simulados',
+                  style: TextStyle(fontSize: 11, color: FenixColors.orange,
+                      fontWeight: FontWeight.w500)),
+            ]),
+          ),
+
+        // ── 1. PATRIMÔNIO TOTAL ──────────────────────────────────────
+        _SectionTitle('Patrimônio total em operação'),
+        const SizedBox(height: 6),
+        _PatrimonioCard(data: data),
+        const SizedBox(height: 14),
+
+        // ── 2. P&L HOJE ─────────────────────────────────────────────
+        _SectionTitle('Lucro de grid — ciclos fechados hoje'),
+        const SizedBox(height: 6),
+        _PnlHojeCard(data: data),
+        const SizedBox(height: 14),
+
+        // ── 3. SALDOS POR ATIVO ─────────────────────────────────────
+        _SectionTitle('Saldos por ativo'),
+        const SizedBox(height: 6),
+        _BalancesCard(data: data),
+        const SizedBox(height: 14),
+
+        // ── 4. ORDENS RECENTES ───────────────────────────────────────
+        _SectionTitle('Ordens recentes'),
+        const SizedBox(height: 6),
+        _OrdensCard(data: data),
+        const SizedBox(height: 8),
+
+        // Última atualização
+        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+          const Icon(Icons.update, size: 11, color: FenixColors.textMuted),
+          const SizedBox(width: 4),
+          Text(
+            'Atualizado: ${DateFormat('HH:mm:ss').format(data.fetchedAt)}',
+            style: const TextStyle(fontFamily: 'RobotoMono',
+                fontSize: 9, color: FenixColors.textMuted),
+          ),
+        ]),
+      ],
     );
   }
 }
 
-// ── 1. Patrimônio total ───────────────────────────────────────────────────────
+// ── 1. Patrimônio ─────────────────────────────────────────────────────────────
 
 class _PatrimonioCard extends StatelessWidget {
-  final _PortfolioData data;
+  final BinanceDashboardData data;
   const _PatrimonioCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'pt_BR');
+    final usdtBalance = data.balances
+        .where((b) => b.asset == 'USDT')
+        .fold(0.0, (s, b) => s + b.total);
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(topColor: FenixColors.yellow),
@@ -362,14 +269,12 @@ class _PatrimonioCard extends StatelessWidget {
           Expanded(child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Patrimônio total',
+              const Text('Patrimônio total (Binance)',
                   style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
               const SizedBox(height: 3),
-              Text('\$${fmt.format(data.patrimonioTotal)}',
-                  style: const TextStyle(
-                      fontFamily: 'RobotoMono', fontSize: 24,
-                      fontWeight: FontWeight.w500,
-                      color: FenixColors.yellow)),
+              Text('\$${fmt.format(data.totalUsdtValue)}',
+                  style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 24,
+                      fontWeight: FontWeight.w500, color: FenixColors.yellow)),
             ],
           )),
           const Icon(Icons.account_balance_wallet_outlined,
@@ -380,27 +285,27 @@ class _PatrimonioCard extends StatelessWidget {
         const SizedBox(height: 10),
         Row(children: [
           Expanded(child: _PatrimonioItem(
-            label: 'Capital alocado',
-            value: '\$${fmt.format(data.capitalAlocado)}',
-            icon: Icons.input_rounded,
-            color: FenixColors.textSecondary,
-            sub: 'investimento inicial',
-          )),
-          Container(width: .5, height: 40, color: FenixColors.border),
-          Expanded(child: _PatrimonioItem(
-            label: 'Lucro de grid',
-            value: '+\$${fmt.format(data.lucroGridAcumulado)}',
-            icon: Icons.trending_up,
+            label: 'USDT disponível',
+            value: '\$${fmt.format(usdtBalance)}',
+            icon: Icons.attach_money,
             color: FenixColors.green,
-            sub: '+${data.lucroGridTotalPct.toStringAsFixed(2)}%',
+            sub: 'saldo livre',
           )),
           Container(width: .5, height: 40, color: FenixColors.border),
           Expanded(child: _PatrimonioItem(
-            label: 'P&L desvalorização',
-            value: '${data.plDesvalorizacao < 0 ? '' : '+'}\$${fmt.format(data.plDesvalorizacao)}',
-            icon: data.plDesvalorizacao < 0 ? Icons.trending_down : Icons.trending_up,
-            color: data.plDesvalorizacao < 0 ? FenixColors.red : FenixColors.green,
-            sub: '${data.plDesvalorizacaoPct.toStringAsFixed(2)}%',
+            label: 'Em ativos',
+            value: '\$${fmt.format(data.totalUsdtValue - usdtBalance)}',
+            icon: Icons.currency_bitcoin,
+            color: FenixColors.yellow,
+            sub: 'valor atual',
+          )),
+          Container(width: .5, height: 40, color: FenixColors.border),
+          Expanded(child: _PatrimonioItem(
+            label: 'P&L hoje',
+            value: '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
+            icon: data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
+            color: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red,
+            sub: '${data.ciclosFechadosHoje} ciclos',
           )),
         ]),
       ]),
@@ -424,457 +329,317 @@ class _PatrimonioItem extends StatelessWidget {
       Row(children: [
         Icon(icon, size: 11, color: color),
         const SizedBox(width: 4),
-        Text(label,
-            style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+        Flexible(child: Text(label,
+            style: const TextStyle(fontSize: 9, color: FenixColors.textMuted))),
       ]),
       const SizedBox(height: 3),
-      Text(value,
-          style: TextStyle(fontFamily: 'RobotoMono', fontSize: 13,
-              fontWeight: FontWeight.w500, color: color)),
-      Text(sub,
-          style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+      Text(value, style: TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
+          fontWeight: FontWeight.w500, color: color)),
+      Text(sub, style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
     ]),
   );
 }
 
-// ── 2. Lucro de grid por período ──────────────────────────────────────────────
+// ── 2. P&L Hoje ──────────────────────────────────────────────────────────────
 
-class _LucroGridSection extends StatelessWidget {
-  final _PortfolioData data;
-  const _LucroGridSection({required this.data});
-
-  @override
-  Widget build(BuildContext context) {
-    final fmt = NumberFormat('#,##0.00', 'pt_BR');
-    return Column(children: [
-      Row(children: [
-        Expanded(child: _PeriodoCard(
-          label: 'Hoje',
-          valor: '+\$${fmt.format(data.lucroGridHoje)}',
-          pct: '+${data.lucroGridHojePct.toStringAsFixed(2)}%',
-          ciclos: data.ciclosHoje,
-          color: FenixColors.green,
-        )),
-        const SizedBox(width: 6),
-        Expanded(child: _PeriodoCard(
-          label: 'Semana',
-          valor: '+\$${fmt.format(data.lucroGridSemana)}',
-          pct: '+${data.lucroGridSemanaPct.toStringAsFixed(2)}%',
-          ciclos: data.ciclosSemana,
-          color: FenixColors.green,
-        )),
-        const SizedBox(width: 6),
-        Expanded(child: _PeriodoCard(
-          label: 'Mês',
-          valor: '+\$${fmt.format(data.lucroGridMes)}',
-          pct: '+${data.lucroGridMesPct.toStringAsFixed(2)}%',
-          ciclos: data.ciclosMes,
-          color: FenixColors.green,
-        )),
-        const SizedBox(width: 6),
-        Expanded(child: _PeriodoCard(
-          label: 'Total',
-          valor: '+\$${fmt.format(data.lucroGridAcumulado)}',
-          pct: '+${data.lucroGridTotalPct.toStringAsFixed(2)}%',
-          ciclos: data.ciclosTotal,
-          color: FenixColors.yellow,
-        )),
-      ]),
-      const SizedBox(height: 8),
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: _cardDeco(),
-        child: Row(children: [
-          const Icon(Icons.loop_outlined, size: 14, color: FenixColors.textMuted),
-          const SizedBox(width: 6),
-          const Text('Ciclos fechados hoje:',
-              style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
-          const SizedBox(width: 6),
-          Text('${data.ciclosHoje} ciclos',
-              style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
-                  fontWeight: FontWeight.w500, color: FenixColors.green)),
-          const Spacer(),
-          const Text('Média por ciclo:',
-              style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
-          const SizedBox(width: 6),
-          Text(
-            '+\$${(data.lucroGridHoje / (data.ciclosHoje > 0 ? data.ciclosHoje : 1)).toStringAsFixed(3)}',
-            style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
-                fontWeight: FontWeight.w500, color: FenixColors.green),
-          ),
-        ]),
-      ),
-    ]);
-  }
-}
-
-class _PeriodoCard extends StatelessWidget {
-  final String label, valor, pct;
-  final int ciclos;
-  final Color color;
-  const _PeriodoCard({
-    required this.label, required this.valor, required this.pct,
-    required this.ciclos, required this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.all(10),
-    decoration: BoxDecoration(
-      color: FenixColors.card,
-      borderRadius: BorderRadius.circular(8),
-      border: Border(top: BorderSide(color: color, width: 2)),
-    ),
-    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Text(label,
-          style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-      const SizedBox(height: 4),
-      Text(valor,
-          style: TextStyle(fontFamily: 'RobotoMono', fontSize: 14,
-              fontWeight: FontWeight.w500, color: color)),
-      Text(pct,
-          style: TextStyle(fontFamily: 'RobotoMono', fontSize: 10, color: color)),
-      const SizedBox(height: 4),
-      Text('$ciclos ciclos',
-          style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-    ]),
-  );
-}
-
-// ── 3. Curva de evolução ──────────────────────────────────────────────────────
-
-class _CurvaGridCard extends StatelessWidget {
-  final _PortfolioData data;
-  const _CurvaGridCard({required this.data});
-
-  @override
-  Widget build(BuildContext context) {
-    final spots = data.curvaGrid;
-    final minY  = spots.map((s) => s.y).reduce((a, b) => a < b ? a : b) * .998;
-    final maxY  = spots.map((s) => s.y).reduce((a, b) => a > b ? a : b) * 1.002;
-    final fmt   = NumberFormat('#,##0', 'pt_BR');
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _cardDeco(),
-      child: Column(children: [
-        Row(children: [
-          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Lucro acumulado de grid',
-                style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
-            Text(
-              '+\$${NumberFormat('#,##0.00', 'pt_BR').format(data.lucroGridAcumulado)}',
-              style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 18,
-                  fontWeight: FontWeight.w500, color: FenixColors.green),
-            ),
-          ]),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: FenixColors.greenBg,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: const Text('APENAS GRIDS',
-                style: TextStyle(fontFamily: 'RobotoMono',
-                    fontSize: 8, color: FenixColors.green,
-                    fontWeight: FontWeight.w600)),
-          ),
-        ]),
-        const SizedBox(height: 14),
-        SizedBox(
-          height: 140,
-          child: LineChart(LineChartData(
-            minY: minY, maxY: maxY,
-            gridData: FlGridData(
-              show: true,
-              drawVerticalLine: false,
-              horizontalInterval: (maxY - minY) / 4,
-              getDrawingHorizontalLine: (_) => FlLine(
-                  color: FenixColors.border.withOpacity(.5), strokeWidth: .5),
-            ),
-            borderData: FlBorderData(show: false),
-            titlesData: FlTitlesData(
-              leftTitles: AxisTitles(sideTitles: SideTitles(
-                showTitles: true, reservedSize: 56,
-                getTitlesWidget: (v, _) => Text(
-                  '\$${fmt.format(v)}',
-                  style: const TextStyle(fontFamily: 'RobotoMono',
-                      fontSize: 9, color: FenixColors.textMuted),
-                ),
-              )),
-              bottomTitles: AxisTitles(sideTitles: SideTitles(
-                showTitles: true, interval: 5,
-                getTitlesWidget: (v, _) => Text('D${v.toInt()}',
-                    style: const TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 9, color: FenixColors.textMuted)),
-              )),
-              rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            ),
-            lineBarsData: [
-              LineChartBarData(
-                spots: spots, isCurved: true, curveSmoothness: .3,
-                color: FenixColors.green, barWidth: 2,
-                dotData: const FlDotData(show: false),
-                belowBarData: BarAreaData(show: true, color: FenixColors.greenBg),
-              ),
-            ],
-          )),
-        ),
-        const SizedBox(height: 6),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text('Capital inicial: \$${NumberFormat('#,##0.00', 'pt_BR').format(data.capitalAlocado)}',
-              style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-          Text('Patrimônio atual: \$${NumberFormat('#,##0.00', 'pt_BR').format(data.patrimonioTotal)}',
-              style: const TextStyle(fontFamily: 'RobotoMono',
-                  fontSize: 9, fontWeight: FontWeight.w500,
-                  color: FenixColors.green)),
-        ]),
-      ]),
-    );
-  }
-}
-
-// ── 4. Desvalorização ─────────────────────────────────────────────────────────
-
-class _DesvalorizacaoCard extends StatelessWidget {
-  final _PortfolioData data;
-  const _DesvalorizacaoCard({required this.data});
-
-  @override
-  Widget build(BuildContext context) {
-    final fmt     = NumberFormat('#,##0.00', 'pt_BR');
-    final isLoss  = data.plDesvalorizacao < 0;
-    final color   = isLoss ? FenixColors.red : FenixColors.green;
-    final colorBg = isLoss ? FenixColors.redBg : FenixColors.greenBg;
-    final spots   = data.curvaDesvalorizacao;
-    final minY    = spots.map((s) => s.y).reduce((a, b) => a < b ? a : b) - 5;
-    final maxY    = spots.map((s) => s.y).reduce((a, b) => a > b ? a : b) + 5;
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _cardDeco(topColor: color),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(children: [
-                Icon(isLoss ? Icons.arrow_downward : Icons.arrow_upward,
-                    size: 14, color: color),
-                const SizedBox(width: 5),
-                const Text('P&L de desvalorização',
-                    style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
-              ]),
-              const SizedBox(height: 3),
-              Text(
-                '${isLoss ? '' : '+'}\$${fmt.format(data.plDesvalorizacao)}',
-                style: TextStyle(fontFamily: 'RobotoMono', fontSize: 20,
-                    fontWeight: FontWeight.w500, color: color),
-              ),
-              Text(
-                '${data.plDesvalorizacaoPct.toStringAsFixed(2)}% sobre posições abertas',
-                style: TextStyle(fontFamily: 'RobotoMono', fontSize: 10, color: color),
-              ),
-            ],
-          )),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: colorBg,
-              borderRadius: BorderRadius.circular(5),
-              border: Border.all(color: color.withOpacity(.3), width: .5),
-            ),
-            child: Text(
-              isLoss ? 'PERDA NÃO\nREALIZADA' : 'GANHO NÃO\nREALIZADO',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontFamily: 'RobotoMono',
-                  fontSize: 8, fontWeight: FontWeight.w700, color: color),
-            ),
-          ),
-        ]),
-        const SizedBox(height: 10),
-        Container(
-          padding: const EdgeInsets.all(10),
-          decoration: BoxDecoration(
-            color: FenixColors.card,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: FenixColors.border, width: .5),
-          ),
-          child: const Row(children: [
-            Icon(Icons.info_outline, size: 12, color: FenixColors.textMuted),
-            SizedBox(width: 7),
-            Expanded(child: Text(
-              'Este valor reflete a variação de preço das moedas nas posições de compra abertas. '
-              'Não inclui o lucro dos ciclos de grid fechados. '
-              'Será recuperado quando o preço voltar ao patamar de compra.',
-              style: TextStyle(fontSize: 10, color: FenixColors.textMuted, height: 1.4),
-            )),
-          ]),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          height: 80,
-          child: LineChart(LineChartData(
-            minY: minY, maxY: maxY,
-            gridData: FlGridData(
-              show: true,
-              drawVerticalLine: false,
-              horizontalInterval: (maxY - minY) / 3,
-              getDrawingHorizontalLine: (v) => FlLine(
-                color: v == 0
-                    ? FenixColors.textMuted.withOpacity(.4)
-                    : FenixColors.border.withOpacity(.4),
-                strokeWidth: v == 0 ? 1 : .5,
-                dashArray: v == 0 ? null : [3, 3],
-              ),
-            ),
-            borderData: FlBorderData(show: false),
-            titlesData: const FlTitlesData(
-              leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-              bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-            ),
-            lineBarsData: [
-              LineChartBarData(
-                spots: spots, isCurved: true, curveSmoothness: .4,
-                color: color, barWidth: 1.5,
-                dotData: const FlDotData(show: false),
-                belowBarData: BarAreaData(
-                    show: true, color: color.withOpacity(.06),
-                    cutOffY: 0, applyCutOffY: true),
-                aboveBarData: BarAreaData(
-                    show: true, color: FenixColors.green.withOpacity(.06),
-                    cutOffY: 0, applyCutOffY: true),
-              ),
-            ],
-          )),
-        ),
-        const SizedBox(height: 6),
-        const Divider(height: 12, thickness: .5, color: FenixColors.border),
-        const Text('Breakdown por robô',
-            style: TextStyle(fontSize: 9, color: FenixColors.textMuted, letterSpacing: .4)),
-        const SizedBox(height: 8),
-        _DesvalRow('ETH/USDT',   -32.15, -1.61),
-        _DesvalRow('SOL/USDT',   -18.40, -2.92),
-        _DesvalRow('BNB/USDT',    -8.22, -0.87),
-        _DesvalRow('MATIC/USDT', -28.65, -3.02),
-      ]),
-    );
-  }
-}
-
-class _DesvalRow extends StatelessWidget {
-  final String symbol;
-  final double valor, pct;
-  const _DesvalRow(this.symbol, this.valor, this.pct);
+class _PnlHojeCard extends StatelessWidget {
+  final BinanceDashboardData data;
+  const _PnlHojeCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final fmt   = NumberFormat('#,##0.00', 'pt_BR');
-    final color = valor < 0 ? FenixColors.red : FenixColors.green;
+    final color = data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _cardDeco(topColor: color),
       child: Row(children: [
-        Text(symbol,
-            style: const TextStyle(fontFamily: 'RobotoMono',
-                fontSize: 11, fontWeight: FontWeight.w500,
-                color: FenixColors.textSecondary)),
-        const Spacer(),
-        SizedBox(
-          width: 80,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(2),
-            child: LinearProgressIndicator(
-              value: (valor.abs() / 40).clamp(0.0, 1.0),
-              minHeight: 5,
-              backgroundColor: FenixColors.border,
-              valueColor: AlwaysStoppedAnimation<Color>(color.withOpacity(.6)),
-            ),
+        Expanded(child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
+                style: TextStyle(fontFamily: 'RobotoMono', fontSize: 22,
+                    fontWeight: FontWeight.w500, color: color)),
+            const SizedBox(height: 4),
+            Text('${data.ciclosFechadosHoje} ciclos fechados hoje',
+                style: const TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+          ],
+        )),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: color.withOpacity(.1),
+            borderRadius: BorderRadius.circular(8),
           ),
-        ),
-        const SizedBox(width: 10),
-        SizedBox(
-          width: 70,
-          child: Text(
-            '${valor < 0 ? '' : '+'}\$${fmt.format(valor)}',
-            textAlign: TextAlign.right,
-            style: TextStyle(fontFamily: 'RobotoMono',
-                fontSize: 11, fontWeight: FontWeight.w500, color: color),
-          ),
-        ),
-        const SizedBox(width: 6),
-        SizedBox(
-          width: 42,
-          child: Text('${pct.toStringAsFixed(2)}%',
-              textAlign: TextAlign.right,
-              style: TextStyle(fontFamily: 'RobotoMono', fontSize: 10, color: color)),
+          child: Column(children: [
+            Icon(data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
+                color: color, size: 24),
+            const SizedBox(height: 4),
+            Text(data.realizedPnlHoje >= 0 ? 'LUCRO' : 'PERDA',
+                style: TextStyle(fontFamily: 'RobotoMono', fontSize: 9,
+                    fontWeight: FontWeight.w700, color: color)),
+          ]),
         ),
       ]),
     );
   }
 }
 
-// ── 5. Ordens recentes ────────────────────────────────────────────────────────
+// ── 3. Saldos ─────────────────────────────────────────────────────────────────
 
-class _OrdensCard extends StatelessWidget {
-  final _PortfolioData data;
-  const _OrdensCard({required this.data});
+class _BalancesCard extends StatelessWidget {
+  final BinanceDashboardData data;
+  const _BalancesCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    final fmt = NumberFormat('#,##0.0000', 'pt_BR');
+    final fmt = NumberFormat('#,##0.00000', 'pt_BR');
+    final fmtUsdt = NumberFormat('#,##0.00', 'pt_BR');
+
+    // Ordena por valor em USDT
+    final balances = [...data.balances];
+    balances.sort((a, b) {
+      final aUsdt = a.asset == 'USDT' ? a.total : (data.prices['${a.asset}USDT'] ?? 0) * a.total;
+      final bUsdt = b.asset == 'USDT' ? b.total : (data.prices['${b.asset}USDT'] ?? 0) * b.total;
+      return bUsdt.compareTo(aUsdt);
+    });
+
+    if (balances.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: _cardDeco(),
+        child: const Text('Nenhum saldo encontrado',
+            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+      );
+    }
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(),
       child: Column(children: [
-        for (final o in data.ordensRecentes) ...[
+        for (int i = 0; i < balances.length; i++) ...[
+          _BalanceRow(
+            balance: balances[i],
+            usdtValue: balances[i].asset == 'USDT'
+                ? balances[i].total
+                : (data.prices['${balances[i].asset}USDT'] ?? 0) * balances[i].total,
+            totalUsdt: data.totalUsdtValue,
+            fmt: fmt,
+            fmtUsdt: fmtUsdt,
+          ),
+          if (i < balances.length - 1)
+            const Divider(height: 12, thickness: .5, color: FenixColors.border),
+        ],
+      ]),
+    );
+  }
+}
+
+class _BalanceRow extends StatelessWidget {
+  final BinanceBalance balance;
+  final double usdtValue;
+  final double totalUsdt;
+  final NumberFormat fmt;
+  final NumberFormat fmtUsdt;
+
+  const _BalanceRow({
+    required this.balance,
+    required this.usdtValue,
+    required this.totalUsdt,
+    required this.fmt,
+    required this.fmtUsdt,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = totalUsdt > 0 ? usdtValue / totalUsdt : 0.0;
+
+    return Row(children: [
+      // Ativo
+      Container(
+        width: 32, height: 32,
+        decoration: BoxDecoration(
+          color: FenixColors.yellowBg,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Center(child: Text(balance.asset[0],
+            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
+                color: FenixColors.yellow))),
+      ),
+      const SizedBox(width: 10),
+      Expanded(child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Row(children: [
-            Expanded(flex: 2, child: Row(children: [
-              Text(o.symbol,
-                  style: const TextStyle(fontFamily: 'RobotoMono',
-                      fontSize: 11, fontWeight: FontWeight.w500,
-                      color: FenixColors.textPrimary)),
-              const SizedBox(width: 6),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                decoration: BoxDecoration(
-                  color: o.side == 'venda' ? FenixColors.greenBg : FenixColors.blueBg,
-                  borderRadius: BorderRadius.circular(3),
-                ),
-                child: Text(o.side,
-                    style: TextStyle(fontSize: 8,
-                        color: o.side == 'venda'
-                            ? FenixColors.green
-                            : FenixColors.blue)),
+            Text(balance.asset,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                    color: FenixColors.textPrimary)),
+            const Spacer(),
+            Text('\$${fmtUsdt.format(usdtValue)}',
+                style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
+                    fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+          ]),
+          const SizedBox(height: 4),
+          Row(children: [
+            Expanded(child: ClipRRect(
+              borderRadius: BorderRadius.circular(2),
+              child: LinearProgressIndicator(
+                value: pct.clamp(0.0, 1.0),
+                minHeight: 3,
+                backgroundColor: FenixColors.border,
+                valueColor: const AlwaysStoppedAnimation<Color>(FenixColors.yellow),
               ),
-            ])),
-            Expanded(child: Text('\$${fmt.format(o.price)}',
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontFamily: 'RobotoMono',
-                    fontSize: 10, color: FenixColors.textSecondary))),
-            Expanded(child: o.side == 'venda'
-                ? Text(
-                    '+${o.profitPct.toStringAsFixed(2)}%  +\$${o.profitUsdt.toStringAsFixed(4)}',
-                    textAlign: TextAlign.right,
-                    style: const TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 10, fontWeight: FontWeight.w500,
-                        color: FenixColors.green))
-                : const Text('em aberto',
-                    textAlign: TextAlign.right,
-                    style: TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 10, color: FenixColors.blue))),
+            )),
             const SizedBox(width: 8),
-            Text(o.time,
+            Text('${(pct * 100).toStringAsFixed(1)}%',
                 style: const TextStyle(fontFamily: 'RobotoMono',
                     fontSize: 9, color: FenixColors.textMuted)),
           ]),
-          if (o != data.ordensRecentes.last)
+          const SizedBox(height: 2),
+          Text('${fmt.format(balance.total)} ${balance.asset}',
+              style: const TextStyle(fontFamily: 'RobotoMono',
+                  fontSize: 9, color: FenixColors.textMuted)),
+        ],
+      )),
+    ]);
+  }
+}
+
+// ── 4. Ordens recentes ────────────────────────────────────────────────────────
+
+class _OrdensCard extends StatelessWidget {
+  final BinanceDashboardData data;
+  const _OrdensCard({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final fmt = NumberFormat('#,##0.00', 'pt_BR');
+
+    if (data.recentOrders.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: _cardDeco(),
+        child: const Text('Nenhuma ordem recente',
+            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _cardDeco(),
+      child: Column(children: [
+        for (int i = 0; i < data.recentOrders.take(10).length; i++) ...[
+          _OrdemRow(order: data.recentOrders[i], fmt: fmt),
+          if (i < data.recentOrders.length - 1 && i < 9)
             const Divider(height: 12, thickness: .5, color: FenixColors.border),
         ],
+      ]),
+    );
+  }
+}
+
+class _OrdemRow extends StatelessWidget {
+  final BinanceOrder order;
+  final NumberFormat fmt;
+  const _OrdemRow({required this.order, required this.fmt});
+
+  @override
+  Widget build(BuildContext context) {
+    final isSell  = order.side == 'SELL';
+    final color   = isSell ? FenixColors.green : FenixColors.blue;
+    final timeStr = DateFormat('HH:mm:ss').format(order.time);
+
+    return Row(children: [
+      Expanded(flex: 2, child: Row(children: [
+        Text(order.symbol,
+            style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 11,
+                fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+        const SizedBox(width: 6),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+          decoration: BoxDecoration(
+            color: color.withOpacity(.15),
+            borderRadius: BorderRadius.circular(3),
+          ),
+          child: Text(isSell ? 'venda' : 'compra',
+              style: TextStyle(fontSize: 8, color: color)),
+        ),
+      ])),
+      Expanded(child: Text('\$${fmt.format(order.price)}',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontFamily: 'RobotoMono',
+              fontSize: 10, color: FenixColors.textSecondary))),
+      Expanded(child: Text(fmt.format(order.executedQty),
+          textAlign: TextAlign.right,
+          style: const TextStyle(fontFamily: 'RobotoMono',
+              fontSize: 10, color: FenixColors.textSecondary))),
+      const SizedBox(width: 8),
+      Text(timeStr,
+          style: const TextStyle(fontFamily: 'RobotoMono',
+              fontSize: 9, color: FenixColors.textMuted)),
+    ]);
+  }
+}
+
+// ── Error card ────────────────────────────────────────────────────────────────
+
+class _ErrorCard extends StatelessWidget {
+  final String message;
+  final VoidCallback onRetry;
+  const _ErrorCard({required this.message, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: FenixColors.card,
+      borderRadius: BorderRadius.circular(10),
+      border: Border.all(color: FenixColors.border, width: .5),
+    ),
+    child: Column(children: [
+      const Icon(Icons.wifi_off_outlined, size: 32, color: FenixColors.textMuted),
+      const SizedBox(height: 12),
+      Text(message, textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 12, color: FenixColors.textMuted, height: 1.4)),
+      const SizedBox(height: 16),
+      ElevatedButton.icon(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: FenixColors.yellow,
+          foregroundColor: const Color(0xFF1A0A00),
+          elevation: 0,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+        ),
+        icon: const Icon(Icons.refresh, size: 16),
+        label: const Text('Tentar novamente'),
+        onPressed: onRetry,
+      ),
+    ]),
+  );
+}
+
+// ── Badge modo ────────────────────────────────────────────────────────────────
+
+class _ModeBadge extends StatelessWidget {
+  final bool realMode;
+  const _ModeBadge({required this.realMode});
+
+  @override
+  Widget build(BuildContext context) {
+    final color   = realMode ? FenixColors.green : FenixColors.orange;
+    final colorBg = realMode ? FenixColors.greenBg : FenixColors.orangeBg;
+    final label   = realMode ? 'MODO REAL' : 'MODO DEMO';
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: colorBg, borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: color.withOpacity(.3), width: .5),
+      ),
+      child: Row(children: [
+        Icon(Icons.circle, size: 7, color: color),
+        const SizedBox(width: 5),
+        Text(label, style: TextStyle(fontFamily: 'RobotoMono',
+            fontSize: 9, fontWeight: FontWeight.w700, color: color)),
       ]),
     );
   }
