@@ -295,7 +295,8 @@ Future<bool> _testBinance(String apiKey, String secret, bool testnet) async {
 Future<bool> _testBybit(String apiKey, String secret, bool testnet) async {
   final base = testnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
   final ts   = DateTime.now().millisecondsSinceEpoch.toString();
-  final sig  = _hmacSha256(secret, '${ts}${apiKey}5000');
+  final qs   = 'accountType=UNIFIED';
+  final sig  = _hmacSha256(secret, '${ts}${apiKey}5000$qs');
   try {
     final resp = await http.get(
       Uri.parse('$base/v5/account/wallet-balance?accountType=UNIFIED'),

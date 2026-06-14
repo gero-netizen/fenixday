@@ -1,15 +1,14 @@
-/// FênixDay — Dashboard P&L v2 (dados reais da Binance)
+/// FênixDay — Dashboard P&L v2 (Binance + Bybit unificado)
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
-import 'services/binance_service.dart';
+import 'services/exchange_service.dart';
 
 const _baseUrl = 'https://fenixday.info/api/v1';
 
@@ -17,15 +16,8 @@ const _baseUrl = 'https://fenixday.info/api/v1';
 
 class _UserInfo {
   final String email;
-  final bool isActive;
-  final bool isSuperuser;
   final bool realModeAllowed;
-  const _UserInfo({
-    required this.email,
-    required this.isActive,
-    required this.isSuperuser,
-    this.realModeAllowed = false,
-  });
+  const _UserInfo({required this.email, required this.realModeAllowed});
 }
 
 class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
@@ -35,26 +27,14 @@ class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('access_token');
-      if (token == null) {
-        state = AsyncValue.error('Não autenticado', StackTrace.current);
-        return;
-      }
-      final meRes  = await http.get(Uri.parse('$_baseUrl/auth/me'),
-          headers: {'Authorization': 'Bearer $token'});
-      final subRes = await http.get(Uri.parse('$_baseUrl/subscriptions/status'),
-          headers: {'Authorization': 'Bearer $token'});
+      if (token == null) { state = AsyncValue.error('Não autenticado', StackTrace.current); return; }
+      final meRes  = await http.get(Uri.parse('$_baseUrl/auth/me'), headers: {'Authorization': 'Bearer $token'});
+      final subRes = await http.get(Uri.parse('$_baseUrl/subscriptions/status'), headers: {'Authorization': 'Bearer $token'});
       if (meRes.statusCode == 200) {
         final me = jsonDecode(meRes.body);
         bool realMode = false;
-        if (subRes.statusCode == 200) {
-          realMode = jsonDecode(subRes.body)['real_mode_allowed'] == true;
-        }
-        state = AsyncValue.data(_UserInfo(
-          email: me['email'] ?? '',
-          isActive: me['is_active'] == true,
-          isSuperuser: me['is_superuser'] == true,
-          realModeAllowed: realMode,
-        ));
+        if (subRes.statusCode == 200) realMode = jsonDecode(subRes.body)['real_mode_allowed'] == true;
+        state = AsyncValue.data(_UserInfo(email: me['email'] ?? '', realModeAllowed: realMode));
       } else {
         state = AsyncValue.error('Erro', StackTrace.current);
       }
@@ -66,16 +46,16 @@ final _userProvider = StateNotifierProvider<_UserNotifier, AsyncValue<_UserInfo>
   (ref) => _UserNotifier(),
 );
 
-// ── Provider Binance ──────────────────────────────────────────────────────────
+// ── Provider Exchange unificado ───────────────────────────────────────────────
 
-class _BinanceNotifier extends StateNotifier<AsyncValue<BinanceDashboardData>> {
-  final _service = BinanceService();
-  _BinanceNotifier() : super(const AsyncValue.loading()) { fetch(); }
+class _ExchangeNotifier extends StateNotifier<AsyncValue<ExchangeDashboardData>> {
+  final _service = ExchangeService();
+  _ExchangeNotifier() : super(const AsyncValue.loading()) { fetch(); }
 
   Future<void> fetch() async {
     state = const AsyncValue.loading();
     try {
-      final data = await _service.fetchDashboardData();
+      final data = await _service.fetchAll();
       state = AsyncValue.data(data);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -83,9 +63,9 @@ class _BinanceNotifier extends StateNotifier<AsyncValue<BinanceDashboardData>> {
   }
 }
 
-final _binanceProvider =
-    StateNotifierProvider<_BinanceNotifier, AsyncValue<BinanceDashboardData>>(
-  (ref) => _BinanceNotifier(),
+final _exchangeProvider =
+    StateNotifierProvider<_ExchangeNotifier, AsyncValue<ExchangeDashboardData>>(
+  (ref) => _ExchangeNotifier(),
 );
 
 // ── Tela ──────────────────────────────────────────────────────────────────────
@@ -95,8 +75,8 @@ class DashboardScreenV2 extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final userAsync    = ref.watch(_userProvider);
-    final binanceAsync = ref.watch(_binanceProvider);
+    final userAsync     = ref.watch(_userProvider);
+    final exchangeAsync = ref.watch(_exchangeProvider);
     final now = DateFormat('dd/MM/yyyy · HH:mm:ss').format(DateTime.now());
 
     return Scaffold(
@@ -104,7 +84,7 @@ class DashboardScreenV2 extends ConsumerWidget {
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: () async {
-            ref.read(_binanceProvider.notifier).fetch();
+            ref.read(_exchangeProvider.notifier).fetch();
             ref.read(_userProvider.notifier).load();
           },
           color: FenixColors.yellow,
@@ -147,25 +127,30 @@ class DashboardScreenV2 extends ConsumerWidget {
                 ]),
                 const SizedBox(height: 14),
 
-                // ── Conteúdo Binance ────────────────────────────────────
-                binanceAsync.when(
+                // ── Conteúdo exchanges ──────────────────────────────────
+                exchangeAsync.when(
                   loading: () => const Center(
                     child: Padding(
                       padding: EdgeInsets.all(40),
                       child: Column(children: [
                         CircularProgressIndicator(color: FenixColors.yellow),
                         SizedBox(height: 16),
-                        Text('Buscando dados da Binance...',
+                        Text('Buscando dados das exchanges...',
                             style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
                       ]),
                     ),
                   ),
-                  error: (e, _) => _ErrorCard(message: e.toString(),
-                      onRetry: () => ref.read(_binanceProvider.notifier).fetch()),
-                  data: (data) => data.error != null
-                      ? _ErrorCard(message: data.error!,
-                          onRetry: () => ref.read(_binanceProvider.notifier).fetch())
-                      : _DashboardContent(data: data),
+                  error: (e, _) => _ErrorCard(
+                    message: e.toString(),
+                    onRetry: () => ref.read(_exchangeProvider.notifier).fetch(),
+                  ),
+                  data: (data) => !data.hasData && data.errors.isNotEmpty
+                      ? _ErrorCard(
+                          message: data.errors.values.first ?? 'Erro desconhecido',
+                          onRetry: () => ref.read(_exchangeProvider.notifier).fetch(),
+                        )
+                      : _DashboardContent(data: data,
+                          onRetry: () => ref.read(_exchangeProvider.notifier).fetch()),
                 ),
               ],
             ),
@@ -176,74 +161,108 @@ class DashboardScreenV2 extends ConsumerWidget {
   }
 }
 
-// ── Conteúdo do dashboard ─────────────────────────────────────────────────────
+// ── Conteúdo principal ────────────────────────────────────────────────────────
 
 class _DashboardContent extends StatelessWidget {
-  final BinanceDashboardData data;
-  const _DashboardContent({required this.data});
+  final ExchangeDashboardData data;
+  final VoidCallback onRetry;
+  const _DashboardContent({required this.data, required this.onRetry});
 
   @override
   Widget build(BuildContext context) {
-    final fmt = NumberFormat('#,##0.00', 'pt_BR');
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
 
-        // Badge testnet
-        if (data.isTestnet)
-          Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            decoration: BoxDecoration(
-              color: FenixColors.orangeBg,
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(color: FenixColors.orange.withOpacity(.3), width: .5),
-            ),
-            child: const Row(children: [
-              Icon(Icons.science_outlined, size: 13, color: FenixColors.orange),
-              SizedBox(width: 6),
-              Text('TESTNET — dados simulados',
-                  style: TextStyle(fontSize: 11, color: FenixColors.orange,
-                      fontWeight: FontWeight.w500)),
-            ]),
-          ),
+        // Exchanges ativas
+        if (data.activeExchanges.isNotEmpty) ...[
+          Row(children: [
+            for (final ex in data.activeExchanges) ...[
+              _ExchangeBadge(name: ex),
+              const SizedBox(width: 6),
+            ],
+          ]),
+          const SizedBox(height: 12),
+        ],
 
-        // ── 1. PATRIMÔNIO TOTAL ──────────────────────────────────────
+        // Erros parciais
+        for (final entry in data.errors.entries)
+          if (entry.value != null) ...[
+            Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: FenixColors.redBg,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: FenixColors.red.withOpacity(.3), width: .5),
+              ),
+              child: Row(children: [
+                const Icon(Icons.warning_amber_outlined, size: 13, color: FenixColors.red),
+                const SizedBox(width: 8),
+                Expanded(child: Text('${entry.key}: ${entry.value}',
+                    style: const TextStyle(fontSize: 10, color: FenixColors.red))),
+              ]),
+            ),
+          ],
+
+        // ── 1. PATRIMÔNIO TOTAL ────────────────────────────────────
         _SectionTitle('Patrimônio total em operação'),
         const SizedBox(height: 6),
         _PatrimonioCard(data: data),
         const SizedBox(height: 14),
 
-        // ── 2. P&L HOJE ─────────────────────────────────────────────
+        // ── 2. P&L HOJE ───────────────────────────────────────────
         _SectionTitle('Lucro de grid — ciclos fechados hoje'),
         const SizedBox(height: 6),
         _PnlHojeCard(data: data),
         const SizedBox(height: 14),
 
-        // ── 3. SALDOS POR ATIVO ─────────────────────────────────────
+        // ── 3. SALDOS POR ATIVO ───────────────────────────────────
         _SectionTitle('Saldos por ativo'),
         const SizedBox(height: 6),
         _BalancesCard(data: data),
         const SizedBox(height: 14),
 
-        // ── 4. ORDENS RECENTES ───────────────────────────────────────
+        // ── 4. ORDENS RECENTES ────────────────────────────────────
         _SectionTitle('Ordens recentes'),
         const SizedBox(height: 6),
         _OrdensCard(data: data),
         const SizedBox(height: 8),
 
-        // Última atualização
         Row(mainAxisAlignment: MainAxisAlignment.end, children: [
           const Icon(Icons.update, size: 11, color: FenixColors.textMuted),
           const SizedBox(width: 4),
-          Text(
-            'Atualizado: ${DateFormat('HH:mm:ss').format(data.fetchedAt)}',
-            style: const TextStyle(fontFamily: 'RobotoMono',
-                fontSize: 9, color: FenixColors.textMuted),
-          ),
+          Text('Atualizado: ${DateFormat('HH:mm:ss').format(data.fetchedAt)}',
+              style: const TextStyle(fontFamily: 'RobotoMono',
+                  fontSize: 9, color: FenixColors.textMuted)),
         ]),
       ],
+    );
+  }
+}
+
+// ── Badge exchange ────────────────────────────────────────────────────────────
+
+class _ExchangeBadge extends StatelessWidget {
+  final String name;
+  const _ExchangeBadge({required this.name});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = name == 'Binance' ? FenixColors.yellow : FenixColors.orange;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(.1),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withOpacity(.3), width: .5),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(Icons.check_circle_outline, size: 10, color: color),
+        const SizedBox(width: 4),
+        Text(name, style: TextStyle(fontFamily: 'RobotoMono',
+            fontSize: 9, fontWeight: FontWeight.w600, color: color)),
+      ]),
     );
   }
 }
@@ -251,15 +270,16 @@ class _DashboardContent extends StatelessWidget {
 // ── 1. Patrimônio ─────────────────────────────────────────────────────────────
 
 class _PatrimonioCard extends StatelessWidget {
-  final BinanceDashboardData data;
+  final ExchangeDashboardData data;
   const _PatrimonioCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'pt_BR');
-    final usdtBalance = data.balances
+    final usdtTotal = data.balances
         .where((b) => b.asset == 'USDT')
         .fold(0.0, (s, b) => s + b.total);
+    final assetsTotal = data.totalUsdtValue - usdtTotal;
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -269,38 +289,31 @@ class _PatrimonioCard extends StatelessWidget {
           Expanded(child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Patrimônio total (Binance)',
-                  style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+              Text('Patrimônio total (${data.activeExchanges.join(' + ')})',
+                  style: const TextStyle(fontSize: 10, color: FenixColors.textMuted)),
               const SizedBox(height: 3),
               Text('\$${fmt.format(data.totalUsdtValue)}',
                   style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 24,
                       fontWeight: FontWeight.w500, color: FenixColors.yellow)),
             ],
           )),
-          const Icon(Icons.account_balance_wallet_outlined,
-              size: 28, color: FenixColors.yellow),
+          const Icon(Icons.account_balance_wallet_outlined, size: 28, color: FenixColors.yellow),
         ]),
         const SizedBox(height: 12),
         const Divider(height: 1, thickness: .5, color: FenixColors.border),
         const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: _PatrimonioItem(
-            label: 'USDT disponível',
-            value: '\$${fmt.format(usdtBalance)}',
-            icon: Icons.attach_money,
-            color: FenixColors.green,
-            sub: 'saldo livre',
+          Expanded(child: _Item(
+            label: 'USDT disponível', value: '\$${fmt.format(usdtTotal)}',
+            icon: Icons.attach_money, color: FenixColors.green, sub: 'saldo livre',
           )),
           Container(width: .5, height: 40, color: FenixColors.border),
-          Expanded(child: _PatrimonioItem(
-            label: 'Em ativos',
-            value: '\$${fmt.format(data.totalUsdtValue - usdtBalance)}',
-            icon: Icons.currency_bitcoin,
-            color: FenixColors.yellow,
-            sub: 'valor atual',
+          Expanded(child: _Item(
+            label: 'Em ativos', value: '\$${fmt.format(assetsTotal)}',
+            icon: Icons.currency_bitcoin, color: FenixColors.yellow, sub: 'valor atual',
           )),
           Container(width: .5, height: 40, color: FenixColors.border),
-          Expanded(child: _PatrimonioItem(
+          Expanded(child: _Item(
             label: 'P&L hoje',
             value: '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
             icon: data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
@@ -313,44 +326,41 @@ class _PatrimonioCard extends StatelessWidget {
   }
 }
 
-class _PatrimonioItem extends StatelessWidget {
+class _Item extends StatelessWidget {
   final String label, value, sub;
   final IconData icon;
   final Color color;
-  const _PatrimonioItem({
-    required this.label, required this.value, required this.sub,
-    required this.icon, required this.color,
-  });
+  const _Item({required this.label, required this.value, required this.sub,
+      required this.icon, required this.color});
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(horizontal: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 8),
     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
-        Icon(icon, size: 11, color: color),
-        const SizedBox(width: 4),
+        Icon(icon, size: 10, color: color),
+        const SizedBox(width: 3),
         Flexible(child: Text(label,
             style: const TextStyle(fontSize: 9, color: FenixColors.textMuted))),
       ]),
       const SizedBox(height: 3),
-      Text(value, style: TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
+      Text(value, style: TextStyle(fontFamily: 'RobotoMono', fontSize: 11,
           fontWeight: FontWeight.w500, color: color)),
       Text(sub, style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
     ]),
   );
 }
 
-// ── 2. P&L Hoje ──────────────────────────────────────────────────────────────
+// ── 2. P&L hoje ──────────────────────────────────────────────────────────────
 
 class _PnlHojeCard extends StatelessWidget {
-  final BinanceDashboardData data;
+  final ExchangeDashboardData data;
   const _PnlHojeCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final fmt   = NumberFormat('#,##0.00', 'pt_BR');
     final color = data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red;
-
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(topColor: color),
@@ -369,8 +379,7 @@ class _PnlHojeCard extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: color.withOpacity(.1),
-            borderRadius: BorderRadius.circular(8),
+            color: color.withOpacity(.1), borderRadius: BorderRadius.circular(8),
           ),
           child: Column(children: [
             Icon(data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
@@ -389,23 +398,28 @@ class _PnlHojeCard extends StatelessWidget {
 // ── 3. Saldos ─────────────────────────────────────────────────────────────────
 
 class _BalancesCard extends StatelessWidget {
-  final BinanceDashboardData data;
+  final ExchangeDashboardData data;
   const _BalancesCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    final fmt = NumberFormat('#,##0.00000', 'pt_BR');
     final fmtUsdt = NumberFormat('#,##0.00', 'pt_BR');
 
-    // Ordena por valor em USDT
-    final balances = [...data.balances];
-    balances.sort((a, b) {
-      final aUsdt = a.asset == 'USDT' ? a.total : (data.prices['${a.asset}USDT'] ?? 0) * a.total;
-      final bUsdt = b.asset == 'USDT' ? b.total : (data.prices['${b.asset}USDT'] ?? 0) * b.total;
-      return bUsdt.compareTo(aUsdt);
-    });
+    // Agrupa por ativo somando exchanges
+    final Map<String, Map<String, double>> grouped = {};
+    for (final b in data.balances) {
+      grouped.putIfAbsent(b.asset, () => {});
+      grouped[b.asset]![b.exchange] = (grouped[b.asset]![b.exchange] ?? 0) + b.total;
+    }
 
-    if (balances.isEmpty) {
+    // Calcula valor USDT por ativo
+    final assets = grouped.entries.map((e) {
+      final total = e.value.values.fold(0.0, (s, v) => s + v);
+      final usdt  = e.key == 'USDT' ? total : (data.prices['${e.key}USDT'] ?? 0) * total;
+      return (asset: e.key, total: total, usdt: usdt, exchanges: e.value);
+    }).toList()..sort((a, b) => b.usdt.compareTo(a.usdt));
+
+    if (assets.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(14),
         decoration: _cardDeco(),
@@ -418,17 +432,16 @@ class _BalancesCard extends StatelessWidget {
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(),
       child: Column(children: [
-        for (int i = 0; i < balances.length; i++) ...[
+        for (int i = 0; i < assets.length; i++) ...[
           _BalanceRow(
-            balance: balances[i],
-            usdtValue: balances[i].asset == 'USDT'
-                ? balances[i].total
-                : (data.prices['${balances[i].asset}USDT'] ?? 0) * balances[i].total,
+            asset: assets[i].asset,
+            total: assets[i].total,
+            usdtValue: assets[i].usdt,
+            exchanges: assets[i].exchanges,
             totalUsdt: data.totalUsdtValue,
-            fmt: fmt,
             fmtUsdt: fmtUsdt,
           ),
-          if (i < balances.length - 1)
+          if (i < assets.length - 1)
             const Divider(height: 12, thickness: .5, color: FenixColors.border),
         ],
       ]),
@@ -437,33 +450,26 @@ class _BalancesCard extends StatelessWidget {
 }
 
 class _BalanceRow extends StatelessWidget {
-  final BinanceBalance balance;
-  final double usdtValue;
-  final double totalUsdt;
-  final NumberFormat fmt;
+  final String asset;
+  final double total, usdtValue, totalUsdt;
+  final Map<String, double> exchanges;
   final NumberFormat fmtUsdt;
 
   const _BalanceRow({
-    required this.balance,
-    required this.usdtValue,
-    required this.totalUsdt,
-    required this.fmt,
-    required this.fmtUsdt,
+    required this.asset, required this.total, required this.usdtValue,
+    required this.exchanges, required this.totalUsdt, required this.fmtUsdt,
   });
 
   @override
   Widget build(BuildContext context) {
-    final pct = totalUsdt > 0 ? usdtValue / totalUsdt : 0.0;
+    final pct = totalUsdt > 0 ? (usdtValue / totalUsdt).clamp(0.0, 1.0) : 0.0;
 
     return Row(children: [
-      // Ativo
       Container(
         width: 32, height: 32,
-        decoration: BoxDecoration(
-          color: FenixColors.yellowBg,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Center(child: Text(balance.asset[0],
+        decoration: BoxDecoration(color: FenixColors.yellowBg,
+            borderRadius: BorderRadius.circular(6)),
+        child: Center(child: Text(asset[0],
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
                 color: FenixColors.yellow))),
       ),
@@ -472,32 +478,40 @@ class _BalanceRow extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(children: [
-            Text(balance.asset,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
-                    color: FenixColors.textPrimary)),
+            Text(asset, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500,
+                color: FenixColors.textPrimary)),
+            const SizedBox(width: 6),
+            // badges por exchange
+            for (final ex in exchanges.entries)
+              Padding(
+                padding: const EdgeInsets.only(right: 3),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: (ex.key == 'Binance' ? FenixColors.yellow : FenixColors.orange).withOpacity(.15),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                  child: Text(ex.key[0],
+                      style: TextStyle(fontSize: 8, fontWeight: FontWeight.w700,
+                          color: ex.key == 'Binance' ? FenixColors.yellow : FenixColors.orange)),
+                ),
+              ),
             const Spacer(),
             Text('\$${fmtUsdt.format(usdtValue)}',
                 style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 12,
                     fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
           ]),
           const SizedBox(height: 4),
-          Row(children: [
-            Expanded(child: ClipRRect(
-              borderRadius: BorderRadius.circular(2),
-              child: LinearProgressIndicator(
-                value: pct.clamp(0.0, 1.0),
-                minHeight: 3,
-                backgroundColor: FenixColors.border,
-                valueColor: const AlwaysStoppedAnimation<Color>(FenixColors.yellow),
-              ),
-            )),
-            const SizedBox(width: 8),
-            Text('${(pct * 100).toStringAsFixed(1)}%',
-                style: const TextStyle(fontFamily: 'RobotoMono',
-                    fontSize: 9, color: FenixColors.textMuted)),
-          ]),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: pct, minHeight: 3,
+              backgroundColor: FenixColors.border,
+              valueColor: const AlwaysStoppedAnimation<Color>(FenixColors.yellow),
+            ),
+          ),
           const SizedBox(height: 2),
-          Text('${fmt.format(balance.total)} ${balance.asset}',
+          Text('${total.toStringAsFixed(6)} $asset  •  ${(pct * 100).toStringAsFixed(1)}%',
               style: const TextStyle(fontFamily: 'RobotoMono',
                   fontSize: 9, color: FenixColors.textMuted)),
         ],
@@ -506,16 +520,15 @@ class _BalanceRow extends StatelessWidget {
   }
 }
 
-// ── 4. Ordens recentes ────────────────────────────────────────────────────────
+// ── 4. Ordens ─────────────────────────────────────────────────────────────────
 
 class _OrdensCard extends StatelessWidget {
-  final BinanceDashboardData data;
+  final ExchangeDashboardData data;
   const _OrdensCard({required this.data});
 
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'pt_BR');
-
     if (data.recentOrders.isEmpty) {
       return Container(
         padding: const EdgeInsets.all(14),
@@ -524,14 +537,13 @@ class _OrdensCard extends StatelessWidget {
             style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
       );
     }
-
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: _cardDeco(),
       child: Column(children: [
-        for (int i = 0; i < data.recentOrders.take(10).length; i++) ...[
+        for (int i = 0; i < data.recentOrders.length; i++) ...[
           _OrdemRow(order: data.recentOrders[i], fmt: fmt),
-          if (i < data.recentOrders.length - 1 && i < 9)
+          if (i < data.recentOrders.length - 1)
             const Divider(height: 12, thickness: .5, color: FenixColors.border),
         ],
       ]),
@@ -540,7 +552,7 @@ class _OrdensCard extends StatelessWidget {
 }
 
 class _OrdemRow extends StatelessWidget {
-  final BinanceOrder order;
+  final ExchangeOrder order;
   final NumberFormat fmt;
   const _OrdemRow({required this.order, required this.fmt});
 
@@ -548,20 +560,26 @@ class _OrdemRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final isSell  = order.side == 'SELL';
     final color   = isSell ? FenixColors.green : FenixColors.blue;
-    final timeStr = DateFormat('HH:mm:ss').format(order.time);
+    final exColor = order.exchange == 'Binance' ? FenixColors.yellow : FenixColors.orange;
 
     return Row(children: [
+      // Exchange badge
+      Container(
+        width: 16, height: 16,
+        decoration: BoxDecoration(color: exColor.withOpacity(.15),
+            borderRadius: BorderRadius.circular(3)),
+        child: Center(child: Text(order.exchange[0],
+            style: TextStyle(fontSize: 8, fontWeight: FontWeight.w700, color: exColor))),
+      ),
+      const SizedBox(width: 6),
       Expanded(flex: 2, child: Row(children: [
-        Text(order.symbol,
-            style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 11,
-                fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
-        const SizedBox(width: 6),
+        Text(order.symbol, style: const TextStyle(fontFamily: 'RobotoMono',
+            fontSize: 11, fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+        const SizedBox(width: 5),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-          decoration: BoxDecoration(
-            color: color.withOpacity(.15),
-            borderRadius: BorderRadius.circular(3),
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+          decoration: BoxDecoration(color: color.withOpacity(.15),
+              borderRadius: BorderRadius.circular(3)),
           child: Text(isSell ? 'venda' : 'compra',
               style: TextStyle(fontSize: 8, color: color)),
         ),
@@ -570,12 +588,7 @@ class _OrdemRow extends StatelessWidget {
           textAlign: TextAlign.center,
           style: const TextStyle(fontFamily: 'RobotoMono',
               fontSize: 10, color: FenixColors.textSecondary))),
-      Expanded(child: Text(fmt.format(order.executedQty),
-          textAlign: TextAlign.right,
-          style: const TextStyle(fontFamily: 'RobotoMono',
-              fontSize: 10, color: FenixColors.textSecondary))),
-      const SizedBox(width: 8),
-      Text(timeStr,
+      Text(DateFormat('HH:mm:ss').format(order.time),
           style: const TextStyle(fontFamily: 'RobotoMono',
               fontSize: 9, color: FenixColors.textMuted)),
     ]);
@@ -592,11 +605,9 @@ class _ErrorCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.all(16),
-    decoration: BoxDecoration(
-      color: FenixColors.card,
-      borderRadius: BorderRadius.circular(10),
-      border: Border.all(color: FenixColors.border, width: .5),
-    ),
+    decoration: BoxDecoration(color: FenixColors.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: FenixColors.border, width: .5)),
     child: Column(children: [
       const Icon(Icons.wifi_off_outlined, size: 32, color: FenixColors.textMuted),
       const SizedBox(height: 12),
@@ -604,12 +615,9 @@ class _ErrorCard extends StatelessWidget {
           style: const TextStyle(fontSize: 12, color: FenixColors.textMuted, height: 1.4)),
       const SizedBox(height: 16),
       ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: FenixColors.yellow,
-          foregroundColor: const Color(0xFF1A0A00),
-          elevation: 0,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        ),
+        style: ElevatedButton.styleFrom(backgroundColor: FenixColors.yellow,
+            foregroundColor: const Color(0xFF1A0A00), elevation: 0,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
         icon: const Icon(Icons.refresh, size: 16),
         label: const Text('Tentar novamente'),
         onPressed: onRetry,
@@ -628,18 +636,16 @@ class _ModeBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     final color   = realMode ? FenixColors.green : FenixColors.orange;
     final colorBg = realMode ? FenixColors.greenBg : FenixColors.orangeBg;
-    final label   = realMode ? 'MODO REAL' : 'MODO DEMO';
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: colorBg, borderRadius: BorderRadius.circular(5),
-        border: Border.all(color: color.withOpacity(.3), width: .5),
-      ),
+      decoration: BoxDecoration(color: colorBg, borderRadius: BorderRadius.circular(5),
+          border: Border.all(color: color.withOpacity(.3), width: .5)),
       child: Row(children: [
         Icon(Icons.circle, size: 7, color: color),
         const SizedBox(width: 5),
-        Text(label, style: TextStyle(fontFamily: 'RobotoMono',
-            fontSize: 9, fontWeight: FontWeight.w700, color: color)),
+        Text(realMode ? 'MODO REAL' : 'MODO DEMO',
+            style: TextStyle(fontFamily: 'RobotoMono', fontSize: 9,
+                fontWeight: FontWeight.w700, color: color)),
       ]),
     );
   }
@@ -650,16 +656,13 @@ class _ModeBadge extends StatelessWidget {
 BoxDecoration _cardDeco({Color? topColor}) => BoxDecoration(
   color: FenixColors.card,
   borderRadius: topColor != null
-      ? const BorderRadius.only(
-          bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8))
+      ? const BorderRadius.only(bottomLeft: Radius.circular(8), bottomRight: Radius.circular(8))
       : BorderRadius.circular(8),
   border: topColor != null
-      ? Border(
-          top: BorderSide(color: topColor, width: 2),
+      ? Border(top: BorderSide(color: topColor, width: 2),
           left: BorderSide(color: FenixColors.border, width: .5),
           right: BorderSide(color: FenixColors.border, width: .5),
-          bottom: BorderSide(color: FenixColors.border, width: .5),
-        )
+          bottom: BorderSide(color: FenixColors.border, width: .5))
       : Border.all(color: FenixColors.border, width: .5),
 );
 
