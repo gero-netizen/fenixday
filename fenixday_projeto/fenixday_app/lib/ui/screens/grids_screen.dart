@@ -1,186 +1,329 @@
 /// FênixDay — Tela de Grids Ativos
-///
-/// Lista todos os robôs de grid em execução com:
-///   • Barra de range visual (inferior ↔ preço atual ↔ superior)
-///   • P&L do dia e total por robô
-///   • Status: ativo / pausado / reconectando
-///   • Ações: pausar / retomar / editar / encerrar
-///   • Badge de modo (REAL / DEMO / PAPER)
+/// Integrado com API real: GET/POST/PUT/DELETE /api/v1/grids
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
 
-// ── Modelos ───────────────────────────────────────────────────────────────────
+const _baseUrl = 'https://fenixday.info/api/v1';
 
-enum GridStatus { active, paused, reconnecting, stopped }
+// ── Modelo ────────────────────────────────────────────────────────────────────
 
-enum GridMode   { real, demo, paper }
+class GridModel {
+  final String id;
+  final String symbol;
+  final String exchange;
+  final double capitalUsdt;
+  final int niveis;
+  final double limiteSuperior;
+  final double limiteInferior;
+  final double espacamentoPct;
+  final double margemLiquidaPct;
+  final double? adxEntrada;
+  final double? atrPctEntrada;
+  final String? gradeEntrada;
+  final double lucroRealizado;
+  final int ciclosFechados;
+  final double volumeNegociado;
+  final String status;
+  final bool modoReal;
+  final DateTime createdAt;
 
-class GridRobot {
-  final String   id;
-  final String   symbol;
-  final String   exchange;
-  final GridMode mode;
-  final GridStatus status;
-  final double   capital;
-  final double   lowerPrice;
-  final double   upperPrice;
-  final double   currentPrice;
-  final int      numGrids;
-  final int      closedCycles;
-  final double   profitToday;
-  final double   profitTotal;
-  final double?  takeProfitPrice;
-  final double?  stopLossPrice;
-  final bool     trailingUp;
-
-  const GridRobot({
+  const GridModel({
     required this.id,
     required this.symbol,
     required this.exchange,
-    required this.mode,
+    required this.capitalUsdt,
+    required this.niveis,
+    required this.limiteSuperior,
+    required this.limiteInferior,
+    required this.espacamentoPct,
+    required this.margemLiquidaPct,
+    this.adxEntrada,
+    this.atrPctEntrada,
+    this.gradeEntrada,
+    required this.lucroRealizado,
+    required this.ciclosFechados,
+    required this.volumeNegociado,
     required this.status,
-    required this.capital,
-    required this.lowerPrice,
-    required this.upperPrice,
-    required this.currentPrice,
-    required this.numGrids,
-    required this.closedCycles,
-    required this.profitToday,
-    required this.profitTotal,
-    this.takeProfitPrice,
-    this.stopLossPrice,
-    this.trailingUp = false,
+    required this.modoReal,
+    required this.createdAt,
   });
 
-  double get priceProgress =>
-      ((currentPrice - lowerPrice) / (upperPrice - lowerPrice)).clamp(0.0, 1.0);
+  factory GridModel.fromJson(Map<String, dynamic> j) => GridModel(
+    id:               j['id'],
+    symbol:           j['symbol'],
+    exchange:         j['exchange'],
+    capitalUsdt:      (j['capital_usdt'] as num).toDouble(),
+    niveis:           j['niveis'],
+    limiteSuperior:   (j['limite_superior'] as num).toDouble(),
+    limiteInferior:   (j['limite_inferior'] as num).toDouble(),
+    espacamentoPct:   (j['espacamento_pct'] as num).toDouble(),
+    margemLiquidaPct: (j['margem_liquida_pct'] as num).toDouble(),
+    adxEntrada:       j['adx_entrada'] != null ? (j['adx_entrada'] as num).toDouble() : null,
+    atrPctEntrada:    j['atr_pct_entrada'] != null ? (j['atr_pct_entrada'] as num).toDouble() : null,
+    gradeEntrada:     j['grade_entrada'],
+    lucroRealizado:   (j['lucro_realizado'] as num).toDouble(),
+    ciclosFechados:   j['ciclos_fechados'],
+    volumeNegociado:  (j['volume_negociado'] as num).toDouble(),
+    status:           j['status'],
+    modoReal:         j['modo_real'] ?? false,
+    createdAt:        DateTime.parse(j['created_at']),
+  );
 
-  bool get isPriceInRange =>
-      currentPrice >= lowerPrice && currentPrice <= upperPrice;
+  bool get isActive  => status == 'active';
+  bool get isPaused  => status == 'paused';
+  bool get isStopped => status == 'stopped';
+
+  double get lucroPercent =>
+      capitalUsdt > 0 ? (lucroRealizado / capitalUsdt) * 100 : 0;
 }
 
-// ── Provider (mock — substituir por Drift local) ──────────────────────────────
+// ── Serviço API ───────────────────────────────────────────────────────────────
 
-final _gridRobotsProvider = Provider<List<GridRobot>>((ref) => [
-  const GridRobot(
-    id: '1', symbol: 'ETH/USDT', exchange: 'Binance',
-    mode: GridMode.real, status: GridStatus.active,
-    capital: 946.0, lowerPrice: 1820, upperPrice: 2180,
-    currentPrice: 1997.40, numGrids: 10, closedCycles: 47,
-    profitToday: 3.87, profitTotal: 42.18, trailingUp: true,
-  ),
-  const GridRobot(
-    id: '2', symbol: 'SOL/USDT', exchange: 'Bybit',
-    mode: GridMode.real, status: GridStatus.active,
-    capital: 938.0, lowerPrice: 142, upperPrice: 174,
-    currentPrice: 158.20, numGrids: 8, closedCycles: 39,
-    profitToday: 3.21, profitTotal: 28.90,
-    stopLossPrice: 140.0,
-  ),
-  const GridRobot(
-    id: '3', symbol: 'MATIC/USDT', exchange: 'OKX',
-    mode: GridMode.real, status: GridStatus.reconnecting,
-    capital: 947.0, lowerPrice: 0.65, upperPrice: 0.95,
-    currentPrice: 0.793, numGrids: 12, closedCycles: 34,
-    profitToday: 0.0, profitTotal: 19.42,
-  ),
-  const GridRobot(
-    id: '4', symbol: 'BNB/USDT', exchange: 'Binance',
-    mode: GridMode.demo, status: GridStatus.active,
-    capital: 500.0, lowerPrice: 580, upperPrice: 660,
-    currentPrice: 621.0, numGrids: 15, closedCycles: 22,
-    profitToday: 2.10, profitTotal: 14.55,
-  ),
-]);
+class _GridsApi {
+  Future<String?> _token() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('access_token');
+  }
 
-final _totalProfitTodayProvider = Provider<double>((ref) {
-  return ref.watch(_gridRobotsProvider)
-      .fold(0.0, (sum, r) => sum + r.profitToday);
-});
+  Map<String, String> _headers(String token) => {
+    'Authorization': 'Bearer $token',
+    'Content-Type': 'application/json',
+  };
 
-// ── Tela ──────────────────────────────────────────────────────────────────────
+  Future<List<GridModel>> fetchGrids() async {
+    final token = await _token();
+    if (token == null) throw Exception('Não autenticado');
+    final r = await http.get(
+      Uri.parse('$_baseUrl/grids'),
+      headers: _headers(token),
+    ).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) throw Exception('Erro ao buscar grids');
+    final List data = jsonDecode(r.body);
+    return data.map((j) => GridModel.fromJson(j)).toList();
+  }
+
+  Future<GridModel> createGrid(Map<String, dynamic> payload) async {
+    final token = await _token();
+    if (token == null) throw Exception('Não autenticado');
+    final r = await http.post(
+      Uri.parse('$_baseUrl/grids'),
+      headers: _headers(token),
+      body: jsonEncode(payload),
+    ).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 201) throw Exception(jsonDecode(r.body)['detail'] ?? 'Erro ao criar grid');
+    return GridModel.fromJson(jsonDecode(r.body));
+  }
+
+  Future<GridModel> pauseGrid(String id) async {
+    final token = await _token();
+    if (token == null) throw Exception('Não autenticado');
+    final r = await http.put(
+      Uri.parse('$_baseUrl/grids/$id/pause'),
+      headers: _headers(token),
+    ).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) throw Exception('Erro ao pausar grid');
+    return GridModel.fromJson(jsonDecode(r.body));
+  }
+
+  Future<GridModel> stopGrid(String id) async {
+    final token = await _token();
+    if (token == null) throw Exception('Não autenticado');
+    final r = await http.put(
+      Uri.parse('$_baseUrl/grids/$id/stop'),
+      headers: _headers(token),
+    ).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) throw Exception('Erro ao parar grid');
+    return GridModel.fromJson(jsonDecode(r.body));
+  }
+
+  Future<void> deleteGrid(String id) async {
+    final token = await _token();
+    if (token == null) throw Exception('Não autenticado');
+    await http.delete(
+      Uri.parse('$_baseUrl/grids/$id'),
+      headers: _headers(token),
+    ).timeout(const Duration(seconds: 10));
+  }
+}
+
+// ── Provider ──────────────────────────────────────────────────────────────────
+
+class _GridsNotifier extends StateNotifier<AsyncValue<List<GridModel>>> {
+  final _api = _GridsApi();
+  _GridsNotifier() : super(const AsyncValue.loading()) { fetch(); }
+
+  Future<void> fetch() async {
+    state = const AsyncValue.loading();
+    try {
+      state = AsyncValue.data(await _api.fetchGrids());
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+    }
+  }
+
+  Future<void> createGrid(Map<String, dynamic> payload) async {
+    await _api.createGrid(payload);
+    await fetch();
+  }
+
+  Future<void> pauseGrid(String id) async {
+    await _api.pauseGrid(id);
+    await fetch();
+  }
+
+  Future<void> stopGrid(String id) async {
+    await _api.stopGrid(id);
+    await fetch();
+  }
+
+  Future<void> deleteGrid(String id) async {
+    await _api.deleteGrid(id);
+    await fetch();
+  }
+}
+
+final gridsProvider =
+    StateNotifierProvider<_GridsNotifier, AsyncValue<List<GridModel>>>(
+  (ref) => _GridsNotifier(),
+);
+
+// ── Tela principal ────────────────────────────────────────────────────────────
 
 class GridsScreen extends ConsumerWidget {
   const GridsScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final robots      = ref.watch(_gridRobotsProvider);
-    final totalToday  = ref.watch(_totalProfitTodayProvider);
-    final fmt         = NumberFormat('#,##0.00', 'pt_BR');
-    final activeCount = robots.where((r) => r.status == GridStatus.active).length;
+    final gridsAsync = ref.watch(gridsProvider);
 
     return Scaffold(
       backgroundColor: FenixColors.bg,
       body: SafeArea(
         child: Column(
           children: [
-            // ── Resumo do dia ──────────────────────────────────────────
-            Container(
-              color: FenixColors.surface,
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            // Header
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
               child: Row(children: [
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('Grids ativos',
-                      style: TextStyle(fontSize: 15,
+                const Expanded(
+                  child: Text('Grids ativos',
+                      style: TextStyle(fontSize: 16,
                           fontWeight: FontWeight.w500,
                           color: FenixColors.textPrimary)),
-                  Text('$activeCount robôs · ${robots.fold(0, (s, r) => s + r.closedCycles)} ciclos hoje',
-                      style: const TextStyle(fontSize: 10,
-                          color: FenixColors.textMuted)),
-                ]),
-                const Spacer(),
-                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                  const Text('Lucro hoje',
-                      style: TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-                  Text('+\$${fmt.format(totalToday)}',
-                      style: const TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 16, fontWeight: FontWeight.w500,
-                          color: FenixColors.green)),
-                ]),
-                const SizedBox(width: 12),
-                // Botão novo grid
-                GestureDetector(
-                  onTap: () => context.go('/grids/config'),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: FenixColors.yellowBg,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(
-                          color: FenixColors.yellow.withOpacity(.4), width: .5),
-                    ),
-                    child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.add, size: 14, color: FenixColors.yellow),
-                      SizedBox(width: 4),
-                      Text('Novo Grid',
-                          style: TextStyle(fontSize: 11,
-                              fontWeight: FontWeight.w500,
-                              color: FenixColors.yellow)),
-                    ]),
+                ),
+                // Refresh
+                gridsAsync.when(
+                  loading: () => const SizedBox(width: 20, height: 20,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: FenixColors.yellow)),
+                  error: (_, __) => const SizedBox.shrink(),
+                  data: (_) => IconButton(
+                    icon: const Icon(Icons.refresh,
+                        size: 20, color: FenixColors.textMuted),
+                    onPressed: () => ref.read(gridsProvider.notifier).fetch(),
                   ),
                 ),
               ]),
             ),
 
-            // ── Lista de robôs ─────────────────────────────────────────
+            // Conteúdo
             Expanded(
-              child: robots.isEmpty
-                  ? const _EmptyState()
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 24),
-                      itemCount: robots.length,
-                      separatorBuilder: (_, __) =>
-                          const SizedBox(height: 10),
-                      itemBuilder: (_, i) =>
-                          _GridCard(robot: robots[i]),
+              child: gridsAsync.when(
+                loading: () => const Center(
+                  child: CircularProgressIndicator(color: FenixColors.yellow),
+                ),
+                error: (e, _) => Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.wifi_off_outlined,
+                        size: 32, color: FenixColors.textMuted),
+                    const SizedBox(height: 12),
+                    Text(e.toString(), textAlign: TextAlign.center,
+                        style: const TextStyle(fontSize: 11,
+                            color: FenixColors.textMuted)),
+                    const SizedBox(height: 16),
+                    ElevatedButton(
+                      onPressed: () => ref.read(gridsProvider.notifier).fetch(),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: FenixColors.yellow),
+                      child: const Text('Tentar novamente',
+                          style: TextStyle(color: Colors.black)),
                     ),
+                  ]),
+                ),
+                data: (grids) {
+                  final ativos  = grids.where((g) => g.isActive).toList();
+                  final pausados = grids.where((g) => g.isPaused).toList();
+                  final parados = grids.where((g) => g.isStopped).toList();
+
+                  if (grids.isEmpty) {
+                    return Center(
+                      child: Column(mainAxisSize: MainAxisSize.min, children: [
+                        const Icon(Icons.grid_view_outlined,
+                            size: 48, color: FenixColors.textMuted),
+                        const SizedBox(height: 16),
+                        const Text('Nenhum grid ativo.',
+                            style: TextStyle(fontSize: 14,
+                                color: FenixColors.textMuted)),
+                        const SizedBox(height: 6),
+                        const Text('Use o Scanner de IA para encontrar\nos melhores pares.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11,
+                                color: FenixColors.textMuted, height: 1.5)),
+                      ]),
+                    );
+                  }
+
+                  return RefreshIndicator(
+                    onRefresh: () => ref.read(gridsProvider.notifier).fetch(),
+                    color: FenixColors.yellow,
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+                      children: [
+                        // Resumo total
+                        _ResumoCard(grids: grids),
+                        const SizedBox(height: 14),
+
+                        if (ativos.isNotEmpty) ...[
+                          _SectionLabel('Ativos (${ativos.length})',
+                              FenixColors.green),
+                          const SizedBox(height: 6),
+                          ...ativos.map((g) => Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _GridCard(grid: g),
+                          )),
+                        ],
+                        if (pausados.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          _SectionLabel('Pausados (${pausados.length})',
+                              FenixColors.orange),
+                          const SizedBox(height: 6),
+                          ...pausados.map((g) => Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _GridCard(grid: g),
+                          )),
+                        ],
+                        if (parados.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          _SectionLabel('Parados (${parados.length})',
+                              FenixColors.textMuted),
+                          const SizedBox(height: 6),
+                          ...parados.map((g) => Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: _GridCard(grid: g),
+                          )),
+                        ],
+                      ],
+                    ),
+                  );
+                },
+              ),
             ),
           ],
         ),
@@ -189,333 +332,388 @@ class GridsScreen extends ConsumerWidget {
   }
 }
 
-// ── Card de robô ──────────────────────────────────────────────────────────────
+// ── Card resumo total ─────────────────────────────────────────────────────────
 
-class _GridCard extends StatelessWidget {
-  final GridRobot robot;
-  const _GridCard({required this.robot});
+class _ResumoCard extends StatelessWidget {
+  final List<GridModel> grids;
+  const _ResumoCard({required this.grids});
 
   @override
   Widget build(BuildContext context) {
-    final fmt      = NumberFormat('#,##0.00###', 'pt_BR');
-    final fmtMoney = NumberFormat('#,##0.00', 'pt_BR');
-    final (statusColor, statusLabel) = _statusStyle(robot.status);
-    final borderColor = robot.status == GridStatus.active
-        ? FenixColors.green.withOpacity(.25)
-        : robot.status == GridStatus.reconnecting
-            ? FenixColors.orange.withOpacity(.25)
-            : FenixColors.border;
+    final fmt = NumberFormat('#,##0.00', 'pt_BR');
+    final totalCapital = grids.fold(0.0, (s, g) => s + g.capitalUsdt);
+    final totalLucro   = grids.fold(0.0, (s, g) => s + g.lucroRealizado);
+    final totalCiclos  = grids.fold(0, (s, g) => s + g.ciclosFechados);
+    final lucroPercent = totalCapital > 0 ? (totalLucro / totalCapital) * 100 : 0;
 
     return Container(
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: FenixColors.card,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: borderColor, width: .5),
+        border: Border(top: BorderSide(color: FenixColors.yellow, width: 2),
+            left: BorderSide(color: FenixColors.border, width: .5),
+            right: BorderSide(color: FenixColors.border, width: .5),
+            bottom: BorderSide(color: FenixColors.border, width: .5)),
       ),
-      child: Column(
-        children: [
-          // ── Header ──────────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-            child: Row(children: [
-              // Símbolo + exchange
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Text(robot.symbol,
-                      style: const TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 14, fontWeight: FontWeight.w500,
-                          color: FenixColors.textPrimary)),
-                  const SizedBox(width: 7),
-                  _ModeBadge(mode: robot.mode),
-                ]),
-                Row(children: [
-                  Text(robot.exchange,
-                      style: const TextStyle(fontSize: 9,
-                          color: FenixColors.textMuted)),
-                  const Text(' · ',
-                      style: TextStyle(color: FenixColors.textMuted)),
-                  Text('Slot ${robot.id} · \$${fmtMoney.format(robot.capital)}',
-                      style: const TextStyle(fontSize: 9,
-                          color: FenixColors.textMuted)),
-                ]),
-              ]),
-              const Spacer(),
+      child: Row(children: [
+        Expanded(child: _ResumoItem(
+          label: 'Capital total',
+          value: '\$${fmt.format(totalCapital)}',
+          color: FenixColors.yellow,
+        )),
+        Container(width: .5, height: 40, color: FenixColors.border),
+        Expanded(child: _ResumoItem(
+          label: 'Lucro realizado',
+          value: '+\$${fmt.format(totalLucro)}',
+          color: FenixColors.green,
+          sub: '+${lucroPercent.toStringAsFixed(2)}%',
+        )),
+        Container(width: .5, height: 40, color: FenixColors.border),
+        Expanded(child: _ResumoItem(
+          label: 'Ciclos fechados',
+          value: '$totalCiclos',
+          color: FenixColors.blue,
+          sub: '${grids.length} grids',
+        )),
+      ]),
+    );
+  }
+}
 
-              // Status + ciclos
-              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                Row(mainAxisSize: MainAxisSize.min, children: [
-                  Container(
-                    width: 6, height: 6,
-                    decoration: BoxDecoration(
-                        color: statusColor, shape: BoxShape.circle),
+class _ResumoItem extends StatelessWidget {
+  final String label, value;
+  final String? sub;
+  final Color color;
+  const _ResumoItem({required this.label, required this.value,
+      required this.color, this.sub});
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 10),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label,
+          style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+      const SizedBox(height: 3),
+      Text(value, style: TextStyle(fontFamily: 'RobotoMono',
+          fontSize: 13, fontWeight: FontWeight.w500, color: color)),
+      if (sub != null)
+        Text(sub!, style: TextStyle(fontSize: 9, color: color)),
+    ]),
+  );
+}
+
+// ── Card de grid ──────────────────────────────────────────────────────────────
+
+class _GridCard extends ConsumerWidget {
+  final GridModel grid;
+  const _GridCard({required this.grid});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fmt        = NumberFormat('#,##0.00', 'pt_BR');
+    final statusColor = _statusColor(grid.status);
+    final gradeColor  = _gradeColor(grid.gradeEntrada ?? 'C');
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: FenixColors.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: grid.isActive
+              ? statusColor.withOpacity(.3)
+              : FenixColors.border,
+          width: .5,
+        ),
+      ),
+      child: Column(children: [
+        // Linha 1: symbol + status + grade + lucro
+        Row(children: [
+          // Exchange badge
+          Container(
+            width: 24, height: 24,
+            decoration: BoxDecoration(
+              color: FenixColors.yellowBg,
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Center(child: Text(
+              grid.exchange[0].toUpperCase(),
+              style: const TextStyle(fontSize: 10,
+                  fontWeight: FontWeight.w700, color: FenixColors.yellow),
+            )),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(grid.symbol.replaceAll('USDT', '/USDT'),
+                style: const TextStyle(fontSize: 14,
+                    fontWeight: FontWeight.w500,
+                    color: FenixColors.textPrimary)),
+          ),
+          // Grade
+          if (grid.gradeEntrada != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: gradeColor.withOpacity(.15),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(grid.gradeEntrada!,
+                  style: TextStyle(fontFamily: 'RobotoMono',
+                      fontSize: 9, fontWeight: FontWeight.w700,
+                      color: gradeColor)),
+            ),
+          const SizedBox(width: 6),
+          // Status
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+            decoration: BoxDecoration(
+              color: statusColor.withOpacity(.15),
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: Text(_statusLabel(grid.status),
+                style: TextStyle(fontFamily: 'RobotoMono',
+                    fontSize: 9, fontWeight: FontWeight.w700,
+                    color: statusColor)),
+          ),
+        ]),
+        const SizedBox(height: 10),
+
+        // Métricas
+        Row(children: [
+          _Metrica(label: 'Capital',
+              value: '\$${fmt.format(grid.capitalUsdt)}',
+              color: FenixColors.textPrimary),
+          _Metrica(label: 'Lucro',
+              value: '+\$${fmt.format(grid.lucroRealizado)}',
+              color: FenixColors.green,
+              sub: '+${grid.lucroPercent.toStringAsFixed(2)}%'),
+          _Metrica(label: 'Ciclos',
+              value: '${grid.ciclosFechados}',
+              color: FenixColors.blue),
+          _Metrica(label: 'Margem/ciclo',
+              value: '+${grid.margemLiquidaPct.toStringAsFixed(2)}%',
+              color: FenixColors.yellow),
+        ]),
+        const SizedBox(height: 10),
+
+        // Range do grid
+        Row(children: [
+          Text('\$${_fmtPrice(grid.limiteInferior)}',
+              style: const TextStyle(fontFamily: 'RobotoMono',
+                  fontSize: 9, color: FenixColors.textMuted)),
+          const Expanded(child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 6),
+            child: LinearProgressIndicator(
+              value: 0.5, minHeight: 3,
+              backgroundColor: FenixColors.border,
+              valueColor: AlwaysStoppedAnimation<Color>(FenixColors.yellow),
+            ),
+          )),
+          Text('\$${_fmtPrice(grid.limiteSuperior)}',
+              style: const TextStyle(fontFamily: 'RobotoMono',
+                  fontSize: 9, color: FenixColors.textMuted)),
+          const SizedBox(width: 6),
+          Text('${grid.niveis} níveis',
+              style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+        ]),
+        const SizedBox(height: 10),
+
+        // Botões de ação
+        if (!grid.isStopped)
+          Row(children: [
+            // Pausar/Retomar
+            Expanded(
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: grid.isPaused
+                      ? FenixColors.green
+                      : FenixColors.orange,
+                  side: BorderSide(
+                    color: grid.isPaused
+                        ? FenixColors.green.withOpacity(.3)
+                        : FenixColors.orange.withOpacity(.3),
+                    width: .5,
                   ),
-                  const SizedBox(width: 4),
-                  Text(statusLabel,
-                      style: TextStyle(fontSize: 10, color: statusColor)),
-                ]),
-                Text('${robot.closedCycles} ciclos',
-                    style: const TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 10, color: FenixColors.textMuted)),
-              ]),
-            ]),
-          ),
-
-          // ── Barra de range ───────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Column(children: [
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(fmt.format(robot.lowerPrice),
-                      style: const TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 9, color: FenixColors.green)),
-                  Text(fmt.format(robot.currentPrice),
-                      style: TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 10, fontWeight: FontWeight.w600,
-                          color: robot.isPriceInRange
-                              ? FenixColors.green
-                              : FenixColors.red)),
-                  Text(fmt.format(robot.upperPrice),
-                      style: const TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 9, color: FenixColors.red)),
-                ],
-              ),
-              const SizedBox(height: 4),
-              // Barra visual do range
-              LayoutBuilder(
-                builder: (ctx, constraints) => Stack(
-                  children: [
-                    // Fundo
-                    Container(
-                      height: 10,
-                      decoration: BoxDecoration(
-                        color: FenixColors.greenBg,
-                        borderRadius: BorderRadius.circular(2),
-                        border: Border.all(
-                            color: FenixColors.green.withOpacity(.3),
-                            width: .5),
-                      ),
-                    ),
-                    // Marcador do preço atual
-                    Positioned(
-                      left: (robot.priceProgress *
-                              constraints.maxWidth)
-                          .clamp(0, constraints.maxWidth - 3),
-                      top: 0,
-                      child: Container(
-                        width: 3, height: 10,
-                        decoration: BoxDecoration(
-                          color: robot.isPriceInRange
-                              ? FenixColors.green
-                              : FenixColors.red,
-                          borderRadius: BorderRadius.circular(1),
-                        ),
-                      ),
-                    ),
-                    // TP/SL markers
-                    if (robot.takeProfitPrice != null)
-                      Positioned(
-                        right: 0, top: -1,
-                        child: Container(
-                          width: 2, height: 12,
-                          color: FenixColors.green,
-                        ),
-                      ),
-                    if (robot.stopLossPrice != null)
-                      Positioned(
-                        left: 0, top: -1,
-                        child: Container(
-                          width: 2, height: 12,
-                          color: FenixColors.red,
-                        ),
-                      ),
-                  ],
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6)),
                 ),
+                icon: Icon(
+                  grid.isPaused
+                      ? Icons.play_arrow_outlined
+                      : Icons.pause_outlined,
+                  size: 14,
+                ),
+                label: Text(grid.isPaused ? 'Retomar' : 'Pausar',
+                    style: const TextStyle(fontSize: 11)),
+                onPressed: () async {
+                  try {
+                    await ref.read(gridsProvider.notifier).pauseGrid(grid.id);
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(e.toString()),
+                            backgroundColor: FenixColors.red),
+                      );
+                    }
+                  }
+                },
               ),
-              const SizedBox(height: 4),
-            ]),
+            ),
+            const SizedBox(width: 8),
+            // Parar
+            Expanded(
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: FenixColors.red,
+                  side: BorderSide(
+                      color: FenixColors.red.withOpacity(.3), width: .5),
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(6)),
+                ),
+                icon: const Icon(Icons.stop_outlined, size: 14),
+                label: const Text('Parar', style: TextStyle(fontSize: 11)),
+                onPressed: () => _confirmStop(context, ref),
+              ),
+            ),
+          ])
+        else
+          // Excluir grid parado
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: FenixColors.textMuted,
+                side: const BorderSide(color: FenixColors.border, width: .5),
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(6)),
+              ),
+              icon: const Icon(Icons.delete_outline, size: 14),
+              label: const Text('Remover', style: TextStyle(fontSize: 11)),
+              onPressed: () => _confirmDelete(context, ref),
+            ),
           ),
+      ]),
+    );
+  }
 
-          // ── P&L + tags ───────────────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-            child: Row(children: [
-              // P&L hoje
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Hoje',
-                    style: TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-                Text('+\$${fmtMoney.format(robot.profitToday)}',
-                    style: const TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 13, fontWeight: FontWeight.w500,
-                        color: FenixColors.green)),
-              ]),
-              const SizedBox(width: 16),
-              // P&L total
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Total',
-                    style: TextStyle(fontSize: 9, color: FenixColors.textMuted)),
-                Text('+\$${fmtMoney.format(robot.profitTotal)}',
-                    style: const TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 13, fontWeight: FontWeight.w500,
-                        color: FenixColors.green)),
-              ]),
-              const Spacer(),
-              // Tags
-              Wrap(spacing: 4, children: [
-                if (robot.trailingUp)
-                  _Tag('Trailing ↑', FenixColors.green),
-                if (robot.takeProfitPrice != null)
-                  _Tag('TP', FenixColors.green),
-                if (robot.stopLossPrice != null)
-                  _Tag('SL', FenixColors.red),
-              ]),
-              const SizedBox(width: 8),
-              // Menu de ações
-              _ActionsMenu(robot: robot),
-            ]),
-          ),
+  Future<void> _confirmStop(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: Text('Parar grid ${grid.symbol}?',
+            style: const TextStyle(fontSize: 14, color: FenixColors.textPrimary)),
+        content: const Text('O grid será parado e todas as ordens abertas canceladas.',
+            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar',
+                  style: TextStyle(color: FenixColors.textMuted))),
+          TextButton(onPressed: () => Navigator.pop(context, true),
+              child: const Text('Parar',
+                  style: TextStyle(color: FenixColors.red,
+                      fontWeight: FontWeight.w600))),
         ],
       ),
     );
-  }
-
-  (Color, String) _statusStyle(GridStatus s) => switch (s) {
-    GridStatus.active       => (FenixColors.green,  'ativo'),
-    GridStatus.paused       => (FenixColors.textMuted, 'pausado'),
-    GridStatus.reconnecting => (FenixColors.orange, 'reconect.'),
-    GridStatus.stopped      => (FenixColors.red,    'encerrado'),
-  };
-}
-
-class _Tag extends StatelessWidget {
-  final String label;
-  final Color  color;
-  const _Tag(this.label, this.color);
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-    decoration: BoxDecoration(
-      color: color.withOpacity(.1),
-      borderRadius: BorderRadius.circular(3),
-      border: Border.all(color: color.withOpacity(.3), width: .5),
-    ),
-    child: Text(label,
-        style: TextStyle(fontSize: 9, fontWeight: FontWeight.w500,
-            color: color)),
-  );
-}
-
-class _ModeBadge extends StatelessWidget {
-  final GridMode mode;
-  const _ModeBadge({required this.mode});
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, label) = switch (mode) {
-      GridMode.real  => (FenixColors.green,  'REAL'),
-      GridMode.demo  => (FenixColors.orange, 'DEMO'),
-      GridMode.paper => (FenixColors.purple, 'PAPER'),
-    };
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-      decoration: BoxDecoration(
-        color: color.withOpacity(.12),
-        borderRadius: BorderRadius.circular(3),
-      ),
-      child: Text(label,
-          style: TextStyle(fontFamily: 'RobotoMono', fontSize: 7,
-              fontWeight: FontWeight.w700, color: color)),
-    );
-  }
-}
-
-class _ActionsMenu extends StatelessWidget {
-  final GridRobot robot;
-  const _ActionsMenu({required this.robot});
-
-  @override
-  Widget build(BuildContext context) => PopupMenuButton<String>(
-    color: FenixColors.card,
-    icon: const Icon(Icons.more_vert,
-        size: 16, color: FenixColors.textMuted),
-    onSelected: (action) => _handle(context, action),
-    itemBuilder: (_) => [
-      if (robot.status == GridStatus.active)
-        _item('pause', 'Pausar grid', FenixColors.textMuted)
-      else
-        _item('resume', 'Retomar grid', FenixColors.green),
-      _item('edit',  'Editar parâmetros', FenixColors.blue),
-      _item('close', 'Encerrar grid',     FenixColors.red),
-    ],
-  );
-
-  PopupMenuItem<String> _item(String v, String label, Color color) =>
-      PopupMenuItem<String>(
-        value: v,
-        child: Text(label,
-            style: TextStyle(fontSize: 12, color: color)),
-      );
-
-  void _handle(BuildContext ctx, String action) {
-    switch (action) {
-      case 'edit':
-        ctx.go('/grids/config');
-      case 'close':
-        showDialog(
-          context: ctx,
-          builder: (_) => AlertDialog(
-            backgroundColor: FenixColors.card,
-            title: Text('Encerrar ${robot.symbol}?',
-                style: const TextStyle(fontSize: 14,
-                    color: FenixColors.textPrimary)),
-            content: const Text(
-              'Todas as ordens abertas serão canceladas.',
-              style: TextStyle(fontSize: 12, color: FenixColors.textMuted),
-            ),
-            actions: [
-              TextButton(onPressed: () => Navigator.pop(ctx),
-                  child: const Text('Cancelar')),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Encerrar',
-                    style: TextStyle(color: FenixColors.red,
-                        fontWeight: FontWeight.w600)),
-              ),
-            ],
-          ),
-        );
+    if (ok == true && context.mounted) {
+      await ref.read(gridsProvider.notifier).stopGrid(grid.id);
     }
   }
+
+  Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: const Text('Remover grid?',
+            style: TextStyle(fontSize: 14, color: FenixColors.textPrimary)),
+        content: const Text('O grid será removido permanentemente.',
+            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar',
+                  style: TextStyle(color: FenixColors.textMuted))),
+          TextButton(onPressed: () => Navigator.pop(context, true),
+              child: const Text('Remover',
+                  style: TextStyle(color: FenixColors.red,
+                      fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      await ref.read(gridsProvider.notifier).deleteGrid(grid.id);
+    }
+  }
+
+  Color _statusColor(String s) => switch (s) {
+    'active'  => FenixColors.green,
+    'paused'  => FenixColors.orange,
+    'error'   => FenixColors.red,
+    _         => FenixColors.textMuted,
+  };
+
+  String _statusLabel(String s) => switch (s) {
+    'active'  => 'ATIVO',
+    'paused'  => 'PAUSADO',
+    'stopped' => 'PARADO',
+    'error'   => 'ERRO',
+    _         => s.toUpperCase(),
+  };
+
+  Color _gradeColor(String g) => switch (g) {
+    'A+' => FenixColors.yellow,
+    'A'  => FenixColors.green,
+    'B'  => FenixColors.blue,
+    _    => FenixColors.textMuted,
+  };
+
+  String _fmtPrice(double p) {
+    if (p >= 1000) return NumberFormat('#,##0.00', 'pt_BR').format(p);
+    if (p >= 1)    return p.toStringAsFixed(4);
+    if (p >= 0.01) return p.toStringAsFixed(5);
+    return p.toStringAsFixed(6);
+  }
 }
 
-// ── Estado vazio ──────────────────────────────────────────────────────────────
+// ── Widgets auxiliares ────────────────────────────────────────────────────────
 
-class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+class _Metrica extends StatelessWidget {
+  final String label, value;
+  final String? sub;
+  final Color color;
+  const _Metrica({required this.label, required this.value,
+      required this.color, this.sub});
 
   @override
-  Widget build(BuildContext context) => Center(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(Icons.grid_view_outlined,
-            size: 48, color: FenixColors.textMuted),
-        const SizedBox(height: 12),
-        const Text('Nenhum grid ativo',
-            style: TextStyle(fontSize: 14,
-                color: FenixColors.textSecondary)),
-        const SizedBox(height: 6),
-        const Text('Crie seu primeiro grid bot para começar',
-            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
-        const SizedBox(height: 20),
-        ElevatedButton.icon(
-          onPressed: () => context.go('/grids/config'),
-          icon: const Icon(Icons.add, size: 16),
-          label: const Text('Criar Grid Bot'),
-        ),
-      ],
-    ),
+  Widget build(BuildContext context) => Expanded(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label,
+          style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+      Text(value, style: TextStyle(fontFamily: 'RobotoMono',
+          fontSize: 11, fontWeight: FontWeight.w500, color: color)),
+      if (sub != null)
+        Text(sub!, style: TextStyle(fontSize: 8, color: color)),
+    ]),
   );
+}
+
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  final Color color;
+  const _SectionLabel(this.text, this.color);
+
+  @override
+  Widget build(BuildContext context) => Row(children: [
+    Container(width: 3, height: 14,
+        decoration: BoxDecoration(color: color,
+            borderRadius: BorderRadius.circular(2))),
+    const SizedBox(width: 8),
+    Text(text, style: TextStyle(fontSize: 11,
+        fontWeight: FontWeight.w500, color: color)),
+  ]);
 }

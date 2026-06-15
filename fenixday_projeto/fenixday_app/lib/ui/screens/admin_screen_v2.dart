@@ -11,11 +11,22 @@
 ///   6. Notificações  — enviar aviso para todos ou por segmento
 ///   7. Top Grids     — aprovar/verificar/remover grids do ranking
 
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
+
+const _adminBase = 'https://fenixday.info/api/v1/admin';
+
+Future<Map<String, String>> _authHeader() async {
+  final prefs = await SharedPreferences.getInstance();
+  final token = prefs.getString('access_token') ?? '';
+  return {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'};
+}
 
 // ── Modelos ───────────────────────────────────────────────────────────────────
 
@@ -77,23 +88,44 @@ final _tabProvider    = StateProvider<int>((ref) => 0);
 final _searchProvider = StateProvider<String>((ref) => '');
 final _filterProvider = StateProvider<String>((ref) => 'todos');
 
-final _metricsProvider = Provider<_AdminMetrics>((ref) => const _AdminMetrics(
-  totalUsers: 1284, activeUsers: 847, exemptUsers: 312,
-  expiredUsers: 112, bannedUsers: 13,
-  revenueMonthly: 9821.13, revenueTotal: 47842.50,
-  newToday: 12, basicCount: 621, proCount: 198, premiumCount: 28,
-));
+final _metricsProvider = FutureProvider<_AdminMetrics>((ref) async {
+  final headers = await _authHeader();
+  final r = await http.get(Uri.parse('$_adminBase/metrics'), headers: headers);
+  if (r.statusCode != 200) throw Exception('Erro ao carregar métricas');
+  final d = jsonDecode(r.body);
+  return _AdminMetrics(
+    totalUsers:     d['total_users']     ?? 0,
+    activeUsers:    d['active_users']    ?? 0,
+    exemptUsers:    d['exempt_users']    ?? 0,
+    expiredUsers:   d['expired_users']   ?? 0,
+    bannedUsers:    d['banned_users']    ?? 0,
+    revenueMonthly: (d['revenue_monthly'] ?? 0).toDouble(),
+    revenueTotal:   (d['revenue_total']   ?? 0).toDouble(),
+    newToday:       d['new_today']       ?? 0,
+    basicCount:     d['basic_count']     ?? 0,
+    proCount:       d['pro_count']       ?? 0,
+    premiumCount:   d['premium_count']   ?? 0,
+  );
+});
 
-final _usersProvider = Provider<List<_AdminUser>>((ref) => [
-  _AdminUser(id:'1', email:'joao@email.com',    planName:'Pro',     licenseStatus:'active',   tradedVolume:12450, createdAt:DateTime(2026,2,1),  lastLogin:DateTime(2026,6,5)),
-  _AdminUser(id:'2', email:'maria@email.com',   planName:'Isento',  licenseStatus:'exempt',   tradedVolume:142,    createdAt:DateTime(2026,5,10), lastLogin:DateTime(2026,6,4)),
-  _AdminUser(id:'3', email:'pedro@email.com',   planName:'Basic',   licenseStatus:'active',   tradedVolume:890,    createdAt:DateTime(2026,2,15), lastLogin:DateTime(2026,6,5)),
-  _AdminUser(id:'4', email:'ana@email.com',     planName:'Basic',   licenseStatus:'expired',  tradedVolume:520,    createdAt:DateTime(2026,1,20), lastLogin:DateTime(2026,5,28)),
-  _AdminUser(id:'5', email:'vip@fenixday.com',  planName:'Premium', licenseStatus:'lifetime', tradedVolume:98000, createdAt:DateTime(2025,12,1), lastLogin:DateTime(2026,6,5)),
-  _AdminUser(id:'6', email:'carlos@email.com',  planName:'Pro',     licenseStatus:'active',   tradedVolume:21000, createdAt:DateTime(2026,4,5),  lastLogin:DateTime(2026,6,3)),
-  _AdminUser(id:'7', email:'lucia@email.com',   planName:'Isento',  licenseStatus:'exempt',   tradedVolume:85,     createdAt:DateTime(2026,6,1),  lastLogin:DateTime(2026,6,5)),
-  _AdminUser(id:'8', email:'spam@bad.com',      planName:'Basic',   licenseStatus:'active',   tradedVolume:600,    createdAt:DateTime(2026,3,1),  lastLogin:DateTime(2026,5,1), isBanned:true),
-]);
+final _usersRefreshProvider = StateProvider<int>((ref) => 0);
+final _usersProvider = FutureProvider<List<_AdminUser>>((ref) async {
+  ref.watch(_usersRefreshProvider);
+  final headers = await _authHeader();
+  final r = await http.get(Uri.parse('$_adminBase/users?limit=100'), headers: headers);
+  if (r.statusCode != 200) throw Exception('Erro ao carregar usuários');
+  final List data = jsonDecode(r.body);
+  return data.map((u) => _AdminUser(
+    id:            u['id'] ?? '',
+    email:         u['email'] ?? '',
+    planName:      u['current_tier'] ?? 'isento',
+    licenseStatus: u['license_status'] ?? 'pending',
+    tradedVolume:  (u['traded_volume'] ?? 0).toDouble(),
+    createdAt:     DateTime.tryParse(u['created_at'] ?? '') ?? DateTime.now(),
+    lastLogin:     u['last_login'] != null ? DateTime.tryParse(u['last_login']) : null,
+    isBanned:      u['is_active'] == false,
+  )).toList();
+});
 
 final _topGridsProvider = Provider<List<_TopGridEntry>>((ref) => [
   _TopGridEntry(rank:1, symbol:'ETH/USDT', exchange:'Binance', profitPct:8.42, cycles:198, copiedBy:1243, isVerified:true,  status:'approved'),
@@ -122,6 +154,7 @@ class AdminScreenV2 extends ConsumerWidget {
   static const _tabs = [
     (Icons.dashboard_outlined,       'Visão Geral'),
     (Icons.people_outline,           'Usuários'),
+    (Icons.person_add_outlined,      'Add User'),
     (Icons.verified_outlined,        'Licenças'),
     (Icons.attach_money,             'Receita'),
     (Icons.receipt_long_outlined,    'Logs'),
@@ -146,6 +179,7 @@ class AdminScreenV2 extends ConsumerWidget {
                 children: [
                   _OverviewTab(),
                   _UsersTab(),
+                  _AddUserTab(),
                   _LicensesTab(),
                   _RevenueTab(),
                   _LogsTab(),
@@ -243,9 +277,15 @@ class _TabBar extends ConsumerWidget {
 class _OverviewTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final m   = ref.watch(_metricsProvider);
-    final fmt = NumberFormat('#,##0.00', 'pt_BR');
+    return ref.watch(_metricsProvider).when(
+      loading: () => const Center(child: CircularProgressIndicator(color: FenixColors.yellow)),
+      error:   (e, _) => Center(child: Text('Erro: $e', style: const TextStyle(color: FenixColors.red))),
+      data:    (m) => _build(context, m),
+    );
+  }
 
+  Widget _build(BuildContext context, _AdminMetrics m) {
+    final fmt = NumberFormat('#,##0.00', 'pt_BR');
     return SingleChildScrollView(
       padding: const EdgeInsets.all(14),
       child: Column(children: [
@@ -414,19 +454,18 @@ class _BarRow extends StatelessWidget {
 class _UsersTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final users  = ref.watch(_usersProvider);
     final search = ref.watch(_searchProvider).toLowerCase();
     final filter = ref.watch(_filterProvider);
-
-    var filtered = users.where((u) {
-      if (search.isNotEmpty && !u.email.toLowerCase().contains(search)) {
-        return false;
-      }
-      if (filter != 'todos' && u.licenseStatus != filter) return false;
-      return true;
-    }).toList();
-
-    return Column(children: [
+    return ref.watch(_usersProvider).when(
+      loading: () => const Center(child: CircularProgressIndicator(color: FenixColors.yellow)),
+      error:   (e, _) => Center(child: Text('Erro: $e', style: const TextStyle(color: FenixColors.red))),
+      data:    (users) {
+        var filtered = users.where((u) {
+          if (search.isNotEmpty && !u.email.toLowerCase().contains(search)) return false;
+          if (filter != 'todos' && u.licenseStatus != filter) return false;
+          return true;
+        }).toList();
+        return Column(children: [
       // Filtros
       Padding(
         padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
@@ -462,6 +501,8 @@ class _UsersTab extends ConsumerWidget {
         ),
       ),
     ]);
+      },
+    );
   }
 }
 
@@ -573,13 +614,26 @@ class _UserRow extends ConsumerWidget {
         child: Text(label, style: TextStyle(fontSize: 12, color: color)),
       );
 
-  void _handleAction(BuildContext ctx, String action, _AdminUser user) {
-    // TODO: chamar endpoints do servidor
+  void _handleAction(BuildContext ctx, String action, _AdminUser user) async {
+    final headers = await _authHeader();
+    final r = await http.patch(
+      Uri.parse('$_adminBase/users/${user.id}/license'),
+      headers: headers,
+      body: jsonEncode({'action': action, 'reason': 'admin manual'}),
+    );
+    if (!ctx.mounted) return;
+    final ok = r.statusCode == 200;
     ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-      content: Text('Ação "$action" aplicada a ${user.email}'),
-      backgroundColor: FenixColors.card,
+      content: Text(ok
+          ? 'Ação "$action" aplicada a ${user.email}'
+          : 'Erro: ${jsonDecode(r.body)['detail'] ?? r.body}'),
+      backgroundColor: ok ? FenixColors.green : FenixColors.red,
       duration: const Duration(seconds: 2),
     ));
+    if (ok) {
+      ProviderScope.containerOf(ctx).read(_usersRefreshProvider.notifier).state++;
+      ProviderScope.containerOf(ctx).refresh(_metricsProvider);
+    }
   }
 
   (Color, String) _statusStyle(String status) => switch (status) {
@@ -597,7 +651,6 @@ class _UserRow extends ConsumerWidget {
 class _LicensesTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final users = ref.watch(_usersProvider);
     final fmt   = NumberFormat('#,##0.00', 'pt_BR');
 
     return SingleChildScrollView(
@@ -648,7 +701,7 @@ class _LicensesTab extends ConsumerWidget {
                 SizedBox(width: 32),
               ]),
             ),
-            ...users.map((u) => Container(
+            ...ref.watch(_usersProvider).valueOrNull?.map((u) => Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
               decoration: const BoxDecoration(
                   border: Border(bottom: BorderSide(
@@ -679,7 +732,7 @@ class _LicensesTab extends ConsumerWidget {
                   onSelected: (_) {},
                 ),
               ]),
-            )),
+            )) ?? [],
           ]),
         ),
       ]),
@@ -745,9 +798,15 @@ class _ActionBtn extends StatelessWidget {
 class _RevenueTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final m   = ref.watch(_metricsProvider);
-    final fmt = NumberFormat('#,##0.00', 'pt_BR');
+    return ref.watch(_metricsProvider).when(
+      loading: () => const Center(child: CircularProgressIndicator(color: FenixColors.yellow)),
+      error:   (e, _) => Center(child: Text('Erro: $e', style: const TextStyle(color: FenixColors.red))),
+      data:    (m) => _build(context, m),
+    );
+  }
 
+  Widget _build(BuildContext context, _AdminMetrics m) {
+    final fmt = NumberFormat('#,##0.00', 'pt_BR');
     final months = [
       ('Jan/26', 6420.0), ('Fev/26', 7030.0), ('Mar/26', 7540.0),
       ('Abr/26', 7980.0), ('Mai/26', 9200.0), ('Jun/26', 9821.13),
@@ -938,12 +997,13 @@ class _NotificationsTabState extends ConsumerState<_NotificationsTab> {
 
   @override
   Widget build(BuildContext context) {
-    final metrics = ref.watch(_metricsProvider);
+    final metricsAsync = ref.watch(_metricsProvider);
+    final metrics = metricsAsync.valueOrNull;
     final targetCount = switch (_segment) {
-      'active'  => metrics.activeUsers,
-      'exempt'  => metrics.exemptUsers,
-      'expired' => metrics.expiredUsers,
-      _         => metrics.totalUsers,
+      'active'  => metrics?.activeUsers  ?? 0,
+      'exempt'  => metrics?.exemptUsers  ?? 0,
+      'expired' => metrics?.expiredUsers ?? 0,
+      _         => metrics?.totalUsers   ?? 0,
     };
 
     return SingleChildScrollView(
@@ -957,10 +1017,10 @@ class _NotificationsTabState extends ConsumerState<_NotificationsTab> {
           decoration: _cardDeco(),
           child: Column(children: [
             for (final (value, label, sub) in [
-              ('todos',   'Todos os usuários',       '${metrics.totalUsers} destinatários'),
-              ('active',  'Apenas assinantes ativos','${metrics.activeUsers} destinatários'),
-              ('exempt',  'Apenas isentos',          '${metrics.exemptUsers} destinatários'),
-              ('expired', 'Apenas expirados',        '${metrics.expiredUsers} destinatários — reconquistar'),
+              ('todos',   'Todos os usuários',       '${metrics == null ? 0 : metrics.totalUsers} destinatários'),
+              ('active',  'Apenas assinantes ativos','${metrics == null ? 0 : metrics.activeUsers} destinatários'),
+              ('exempt',  'Apenas isentos',          '${metrics == null ? 0 : metrics.exemptUsers} destinatários'),
+              ('expired', 'Apenas expirados',        '${metrics == null ? 0 : metrics.expiredUsers} destinatários — reconquistar'),
             ])
               RadioListTile<String>(
                 value: value, groupValue: _segment,
@@ -1245,6 +1305,162 @@ class _TopGridCard extends StatelessWidget {
                 FenixColors.red, Icons.delete_outline, () {})),
           ],
         ]),
+      ]),
+    );
+  }
+}
+
+
+// ── ADD USER ─────────────────────────────────────────────────────────────────
+
+class _AddUserTab extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_AddUserTab> createState() => _AddUserTabState();
+}
+
+class _AddUserTabState extends ConsumerState<_AddUserTab> {
+  final _emailCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
+  String _plan     = 'exempt';
+  bool _isSu       = false;
+  bool _loading    = false;
+  String? _msg;
+  bool _success    = false;
+
+  @override
+  void dispose() { _emailCtrl.dispose(); _passCtrl.dispose(); super.dispose(); }
+
+  Future<void> _create() async {
+    if (_emailCtrl.text.isEmpty || _passCtrl.text.isEmpty) {
+      setState(() { _msg = 'Preencha e-mail e senha.'; _success = false; });
+      return;
+    }
+    setState(() { _loading = true; _msg = null; });
+    final headers = await _authHeader();
+    final r = await http.post(
+      Uri.parse('$_adminBase/users/create'),
+      headers: headers,
+      body: jsonEncode({
+        'email': _emailCtrl.text.trim(),
+        'password': _passCtrl.text,
+        'plan': _plan,
+        'is_superuser': _isSu,
+      }),
+    );
+    setState(() {
+      _loading = false;
+      _success = r.statusCode == 200;
+      _msg = _success
+          ? 'Usuário criado: ${_emailCtrl.text}'
+          : jsonDecode(r.body)['detail'] ?? 'Erro ao criar usuário.';
+      if (_success) {
+        _emailCtrl.clear(); _passCtrl.clear();
+        _plan = 'exempt'; _isSu = false;
+        ref.read(_usersRefreshProvider.notifier).state++;
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _SectionTitle('Criar usuário manualmente'),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: _cardDeco(topColor: FenixColors.violet),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('E-mail', style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _emailCtrl,
+              keyboardType: TextInputType.emailAddress,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              decoration: const InputDecoration(
+                hintText: 'usuario@email.com',
+                hintStyle: TextStyle(color: FenixColors.textMuted),
+                prefixIcon: Icon(Icons.mail_outline, size: 16, color: FenixColors.textMuted),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text('Senha', style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+            const SizedBox(height: 4),
+            TextField(
+              controller: _passCtrl,
+              obscureText: true,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              decoration: const InputDecoration(
+                hintText: 'Senha inicial',
+                hintStyle: TextStyle(color: FenixColors.textMuted),
+                prefixIcon: Icon(Icons.lock_outline, size: 16, color: FenixColors.textMuted),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text('Plano', style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+            const SizedBox(height: 4),
+            DropdownButton<String>(
+              value: _plan, isExpanded: true,
+              dropdownColor: FenixColors.card,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              underline: Container(height: .5, color: FenixColors.border),
+              items: const [
+                DropdownMenuItem(value: 'exempt',  child: Text('Isento (grátis)')),
+                DropdownMenuItem(value: 'basic',   child: Text('Basic')),
+                DropdownMenuItem(value: 'pro',     child: Text('Pro')),
+                DropdownMenuItem(value: 'premium', child: Text('Premium')),
+              ],
+              onChanged: (v) => setState(() => _plan = v!),
+            ),
+            const SizedBox(height: 12),
+            Row(children: [
+              Switch(value: _isSu, onChanged: (v) => setState(() => _isSu = v),
+                  activeColor: FenixColors.violet),
+              const SizedBox(width: 8),
+              const Expanded(child: Text('Conceder acesso admin (superuser)',
+                  style: TextStyle(fontSize: 12, color: FenixColors.textSecondary))),
+            ]),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: FenixColors.violet,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 13),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  elevation: 0,
+                ),
+                icon: _loading
+                    ? const SizedBox(width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.white))
+                    : const Icon(Icons.person_add, size: 16),
+                label: Text(_loading ? 'Criando...' : 'Criar usuário',
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+                onPressed: _loading ? null : _create,
+              ),
+            ),
+            if (_msg != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: (_success ? FenixColors.green : FenixColors.red).withOpacity(.1),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: (_success ? FenixColors.green : FenixColors.red).withOpacity(.3)),
+                ),
+                child: Row(children: [
+                  Icon(_success ? Icons.check_circle_outline : Icons.error_outline,
+                      size: 14, color: _success ? FenixColors.green : FenixColors.red),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(_msg!, style: TextStyle(fontSize: 11,
+                      color: _success ? FenixColors.green : FenixColors.red))),
+                ]),
+              ),
+            ],
+          ]),
+        ),
       ]),
     );
   }

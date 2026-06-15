@@ -1,16 +1,17 @@
-/// FênixDay — Serviço Unificado de Exchanges
-/// Agrega dados de Binance e Bybit
+/// FênixDay — Serviço Unificado de Exchanges v2
+/// Binance + Bybit com dados separados por exchange
 
 import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 const _kStorage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
 );
 
-// ── Modelos unificados ────────────────────────────────────────────────────────
+// ── Modelos ───────────────────────────────────────────────────────────────────
 
 class ExchangeBalance {
   final String exchange;
@@ -43,6 +44,31 @@ class ExchangeOrder {
   });
 }
 
+// Dados por exchange individual
+class ExchangeSnapshot {
+  final String name;
+  final List<ExchangeBalance> balances;
+  final double totalUsdt;
+  final List<ExchangeOrder> orders;
+  final Map<String, double> prices;
+  final String? error;
+  final bool configured;
+  final bool isTestnet;
+
+  const ExchangeSnapshot({
+    required this.name,
+    required this.balances,
+    required this.totalUsdt,
+    required this.orders,
+    required this.prices,
+    this.error,
+    required this.configured,
+    required this.isTestnet,
+  });
+
+  bool get hasData => balances.isNotEmpty;
+}
+
 class ExchangeDashboardData {
   final List<ExchangeBalance> balances;
   final double totalUsdtValue;
@@ -53,6 +79,8 @@ class ExchangeDashboardData {
   final List<String> activeExchanges;
   final DateTime fetchedAt;
   final Map<String, String?> errors;
+  final Map<String, ExchangeSnapshot> snapshots; // dados por exchange
+  final bool modoReal; // lido do SecureStorage
 
   const ExchangeDashboardData({
     required this.balances,
@@ -64,6 +92,8 @@ class ExchangeDashboardData {
     required this.activeExchanges,
     required this.fetchedAt,
     required this.errors,
+    required this.snapshots,
+    required this.modoReal,
   });
 
   bool get hasError => errors.values.any((e) => e != null);
@@ -73,6 +103,7 @@ class ExchangeDashboardData {
     balances: [], totalUsdtValue: 0, recentOrders: [],
     prices: {}, realizedPnlHoje: 0, ciclosFechadosHoje: 0,
     activeExchanges: [], fetchedAt: DateTime.now(), errors: {},
+    snapshots: {}, modoReal: false,
   );
 }
 
@@ -161,6 +192,40 @@ class _BinanceService {
     }
     return all;
   }
+
+  Future<ExchangeSnapshot> fetchSnapshot() async {
+    await load();
+    if (!configured) {
+      return ExchangeSnapshot(
+        name: 'Binance', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: null,
+        configured: false, isTestnet: false,
+      );
+    }
+    try {
+      final balances = await fetchBalances();
+      final nonUsdt  = balances.where((b) => b.asset != 'USDT').toList();
+      final usdtBal  = balances.where((b) => b.asset == 'USDT').fold(0.0, (s, b) => s + b.total);
+      final symbols  = nonUsdt.map((b) => '${b.asset}USDT').toList();
+      final prices   = await fetchPrices(symbols);
+      double total   = usdtBal;
+      for (final b in nonUsdt) {
+        total += b.total * (prices['${b.asset}USDT'] ?? 0);
+      }
+      final orders = await fetchOrders(symbols);
+      return ExchangeSnapshot(
+        name: 'Binance', balances: balances, totalUsdt: total,
+        orders: orders, prices: prices, error: null,
+        configured: true, isTestnet: testnet,
+      );
+    } catch (e) {
+      return ExchangeSnapshot(
+        name: 'Binance', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: e.toString(),
+        configured: true, isTestnet: testnet,
+      );
+    }
+  }
 }
 
 // ── Serviço Bybit ─────────────────────────────────────────────────────────────
@@ -181,29 +246,28 @@ class _BybitService {
 
   String get _base => testnet ? _testnetUrl : _mainnet;
 
-  // Assinatura Bybit: timestamp + apiKey + recvWindow + queryString
   Map<String, String> _headers(String ts, {String queryString = ''}) => {
-    'X-BAPI-API-KEY':      apiKey!,
-    'X-BAPI-TIMESTAMP':    ts,
-    'X-BAPI-SIGN':         _hmac(secret!, '$ts${apiKey!}5000$queryString'),
-    'X-BAPI-RECV-WINDOW':  '5000',
+    'X-BAPI-API-KEY':     apiKey!,
+    'X-BAPI-TIMESTAMP':   ts,
+    'X-BAPI-SIGN':        _hmac(secret!, '$ts${apiKey!}5000$queryString'),
+    'X-BAPI-RECV-WINDOW': '5000',
   };
 
   Future<List<ExchangeBalance>> fetchBalances() async {
-    final ts          = DateTime.now().millisecondsSinceEpoch.toString();
-    final queryString = 'accountType=UNIFIED';
-    final r = await http.get(
-      Uri.parse('$_base/v5/account/wallet-balance?$queryString'),
-      headers: _headers(ts, queryString: queryString),
+    final ts  = DateTime.now().millisecondsSinceEpoch.toString();
+    final qs  = 'accountType=UNIFIED';
+    final r   = await http.get(
+      Uri.parse('$_base/v5/account/wallet-balance?$qs'),
+      headers: _headers(ts, queryString: qs),
     ).timeout(const Duration(seconds: 10));
     final body = jsonDecode(r.body);
-    if (body['retCode'] != 0) throw Exception(body['retMsg']);
+    if (body['retCode'] != 0) throw Exception('Bybit retCode:\${body["retCode"]} msg:\${body["retMsg"]} body:\${r.body.substring(0, r.body.length < 200 ? r.body.length : 200)}');
     final List coins = body['result']?['list']?[0]?['coin'] ?? [];
     return coins
         .map((c) => ExchangeBalance(
               exchange: 'Bybit',
               asset:    c['coin'],
-              free:     double.tryParse(c['availableToWithdraw'].toString()) ?? 0,
+              free:     double.tryParse((c['walletBalance'] ?? c['availableToWithdraw'] ?? '0').toString()) ?? 0,
               locked:   double.tryParse(c['locked'].toString()) ?? 0,
             ))
         .where((b) => b.total > 0.000001)
@@ -233,11 +297,11 @@ class _BybitService {
     final all = <ExchangeOrder>[];
     for (final sym in symbols.take(5)) {
       try {
-        final ts          = DateTime.now().millisecondsSinceEpoch.toString();
-        final queryString = 'category=spot&symbol=$sym&limit=20';
-        final r = await http.get(
-          Uri.parse('$_base/v5/order/history?$queryString'),
-          headers: _headers(ts, queryString: queryString),
+        final ts = DateTime.now().millisecondsSinceEpoch.toString();
+        final qs = 'category=spot&symbol=$sym&limit=20';
+        final r  = await http.get(
+          Uri.parse('$_base/v5/order/history?$qs'),
+          headers: _headers(ts, queryString: qs),
         ).timeout(const Duration(seconds: 10));
         final body = jsonDecode(r.body);
         if (body['retCode'] != 0) continue;
@@ -257,6 +321,40 @@ class _BybitService {
     }
     return all;
   }
+
+  Future<ExchangeSnapshot> fetchSnapshot() async {
+    await load();
+    if (!configured) {
+      return ExchangeSnapshot(
+        name: 'Bybit', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: null,
+        configured: false, isTestnet: false,
+      );
+    }
+    try {
+      final balances = await fetchBalances();
+      final nonUsdt  = balances.where((b) => b.asset != 'USDT').toList();
+      final usdtBal  = balances.where((b) => b.asset == 'USDT').fold(0.0, (s, b) => s + b.total);
+      final symbols  = nonUsdt.map((b) => '${b.asset}USDT').toList();
+      final prices   = await fetchPrices(symbols);
+      double total   = usdtBal;
+      for (final b in nonUsdt) {
+        total += b.total * (prices['${b.asset}USDT'] ?? 0);
+      }
+      final orders = await fetchOrders(symbols);
+      return ExchangeSnapshot(
+        name: 'Bybit', balances: balances, totalUsdt: total,
+        orders: orders, prices: prices, error: null,
+        configured: true, isTestnet: testnet,
+      );
+    } catch (e) {
+      return ExchangeSnapshot(
+        name: 'Bybit', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: e.toString(),
+        configured: true, isTestnet: testnet,
+      );
+    }
+  }
 }
 
 // ── Serviço Unificado ─────────────────────────────────────────────────────────
@@ -266,84 +364,62 @@ class ExchangeService {
   final _bybit   = _BybitService();
 
   Future<ExchangeDashboardData> fetchAll() async {
-    await _binance.load();
-    await _bybit.load();
+    // Busca as duas exchanges em paralelo
+    final results = await Future.wait([
+      _binance.fetchSnapshot(),
+      _bybit.fetchSnapshot(),
+    ]);
 
-    final allBalances = <ExchangeBalance>[];
-    final allOrders   = <ExchangeOrder>[];
-    final allPrices   = <String, double>{};
-    final errors      = <String, String?>{};
-    final active      = <String>[];
+    final binanceSnap = results[0];
+    final bybitSnap   = results[1];
 
-    // ── Binance ──────────────────────────────────────────────────────
-    if (_binance.configured) {
-      try {
-        final balances = await _binance.fetchBalances();
-        allBalances.addAll(balances);
-        final symbols = balances
-            .where((b) => b.asset != 'USDT')
-            .map((b) => '${b.asset}USDT')
-            .toList();
-        final prices = await _binance.fetchPrices(symbols);
-        allPrices.addAll(prices);
-        final orders = await _binance.fetchOrders(symbols);
-        allOrders.addAll(orders);
-        active.add('Binance');
-        errors['Binance'] = null;
-      } catch (e) {
-        errors['Binance'] = e.toString();
-      }
-    }
+    final snapshots = <String, ExchangeSnapshot>{};
+    if (binanceSnap.configured) snapshots['Binance'] = binanceSnap;
+    if (bybitSnap.configured)   snapshots['Bybit']   = bybitSnap;
 
-    // ── Bybit ────────────────────────────────────────────────────────
-    if (_bybit.configured) {
-      try {
-        final balances = await _bybit.fetchBalances();
-        allBalances.addAll(balances);
-        final symbols = balances
-            .where((b) => b.asset != 'USDT')
-            .map((b) => '${b.asset}USDT')
-            .toList();
-        final prices = await _bybit.fetchPrices(symbols);
-        allPrices.addAll(prices);
-        final orders = await _bybit.fetchOrders(symbols);
-        allOrders.addAll(orders);
-        active.add('Bybit');
-        errors['Bybit'] = null;
-      } catch (e) {
-        errors['Bybit'] = e.toString();
-      }
-    }
-
-    if (!_binance.configured && !_bybit.configured) {
+    if (!binanceSnap.configured && !bybitSnap.configured) {
       return ExchangeDashboardData(
         balances: [], totalUsdtValue: 0, recentOrders: [],
         prices: {}, realizedPnlHoje: 0, ciclosFechadosHoje: 0,
         activeExchanges: [], fetchedAt: DateTime.now(),
-        errors: {'geral': 'Nenhuma exchange configurada. Configure em Configurações → Corretoras.'},
+        errors: {'geral': 'Nenhuma exchange configurada.'},
+        snapshots: {}, modoReal: false,
       );
     }
 
-    // ── Calcula total em USDT ────────────────────────────────────────
-    double totalUsdt = 0;
-    for (final b in allBalances) {
-      if (b.asset == 'USDT') {
-        totalUsdt += b.total;
-      } else {
-        final price = allPrices['${b.asset}USDT'] ?? 0;
-        totalUsdt += b.total * price;
-      }
-    }
+    // Agrega tudo
+    final allBalances = <ExchangeBalance>[
+      ...binanceSnap.balances,
+      ...bybitSnap.balances,
+    ];
+    final allOrders = <ExchangeOrder>[
+      ...binanceSnap.orders,
+      ...bybitSnap.orders,
+    ]..sort((a, b) => b.time.compareTo(a.time));
 
-    // ── P&L do dia ───────────────────────────────────────────────────
-    allOrders.sort((a, b) => b.time.compareTo(a.time));
+    final allPrices = <String, double>{
+      ...binanceSnap.prices,
+      ...bybitSnap.prices,
+    };
+
+    final totalUsdt = binanceSnap.totalUsdt + bybitSnap.totalUsdt;
+
+    final errors = <String, String?>{};
+    if (binanceSnap.error != null) errors['Binance'] = binanceSnap.error;
+    if (bybitSnap.error != null)   errors['Bybit']   = bybitSnap.error;
+
+    final active = <String>[
+      if (binanceSnap.configured && binanceSnap.error == null) 'Binance',
+      if (bybitSnap.configured   && bybitSnap.error == null)   'Bybit',
+    ];
+
+    // P&L do dia
     final today      = DateTime.now();
     final startOfDay = DateTime(today.year, today.month, today.day);
     final bySymbol   = <String, List<ExchangeOrder>>{};
     for (final o in allOrders) {
       bySymbol.putIfAbsent('${o.exchange}:${o.symbol}', () => []).add(o);
     }
-
     double pnlHoje = 0;
     int    ciclos  = 0;
     for (final orders in bySymbol.values) {
@@ -358,6 +434,10 @@ class ExchangeService {
       }
     }
 
+    // Lê modo real do storage
+    final prefs    = await SharedPreferences.getInstance();
+    final modoReal = prefs.getBool('fenix_modo_real') ?? true;
+
     return ExchangeDashboardData(
       balances:           allBalances,
       totalUsdtValue:     totalUsdt,
@@ -368,6 +448,8 @@ class ExchangeService {
       activeExchanges:    active,
       fetchedAt:          DateTime.now(),
       errors:             errors,
+      snapshots:          snapshots,
+      modoReal:           modoReal,
     );
   }
 }

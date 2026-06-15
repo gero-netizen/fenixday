@@ -22,10 +22,13 @@ import 'ui/screens/admin_screen_v2.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
 import 'ui/screens/privacy_screen.dart';
+import 'ui/screens/scanner_screen.dart';
+import 'ui/screens/grids_screen.dart';
 
 // ── Provider de autenticação ──────────────────────────────────────────────────
 
 final authProvider = StateProvider<bool>((ref) => false);
+final superuserProvider = StateProvider<bool>((ref) => false);
 
 // ── Router ────────────────────────────────────────────────────────────────────
 
@@ -52,7 +55,7 @@ final _router = GoRouter(
         GoRoute(
           path: '/grids',
           name: 'grids',
-          builder: (_, __) => const _GridsPlaceholder(),
+          builder: (_, __) => const GridsScreen(),
           routes: [
             GoRoute(
               path: 'config',
@@ -64,7 +67,7 @@ final _router = GoRouter(
         GoRoute(
           path: '/scanner',
           name: 'scanner',
-          builder: (_, __) => const _ScannerPlaceholder(),
+          builder: (_, __) => const ScannerScreen(),
         ),
         GoRoute(
           path: '/licenca',
@@ -293,12 +296,16 @@ class _SettingsScreen extends StatelessWidget {
             color: FenixColors.orange,
             onTap: () => context.push('/privacidade'),
           ),
-          _SettingsTile(
-            icon:  Icons.admin_panel_settings_outlined,
-            label: 'Painel Admin',
-            color: FenixColors.violet,
-            onTap: () => context.push('/admin'),
-          ),
+          Consumer(builder: (context, ref, _) {
+            final isSuperuser = ref.watch(superuserProvider);
+            if (!isSuperuser) return const SizedBox.shrink();
+            return _SettingsTile(
+              icon:  Icons.admin_panel_settings_outlined,
+              label: 'Painel Admin',
+              color: FenixColors.violet,
+              onTap: () => context.push('/admin'),
+            );
+          }),
         ],
       ),
     );

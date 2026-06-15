@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
+import '../../main.dart' show superuserProvider;
 
 const _baseUrl = 'https://fenixday.info/api/v1';
 
@@ -53,6 +54,20 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
     await prefs.setString('access_token', token);
   }
 
+  Future<void> _saveUserInfo(String token) async {
+    try {
+      final res = await http.get(
+        Uri.parse('$_baseUrl/auth/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('is_superuser', data['is_superuser'] == true);
+      }
+    } catch (_) {}
+  }
+
   Future<void> signInWithGoogle() async {
     state = state.copyWith(isGoogleLoading: true);
     try {
@@ -74,6 +89,7 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         await _saveToken(data['access_token']);
+        await _saveUserInfo(data['access_token']);
         state = state.copyWith(isGoogleLoading: false, success: true);
       } else {
         final data = jsonDecode(response.body);
@@ -103,6 +119,7 @@ class _AuthNotifier extends StateNotifier<_AuthState> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         await _saveToken(data['access_token']);
+        await _saveUserInfo(data['access_token']);
         state = state.copyWith(isLoading: false, success: true);
       } else {
         final data = jsonDecode(response.body);
@@ -147,9 +164,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final auth = ref.watch(_authProvider);
 
     // Navega para dashboard quando login bem-sucedido
-    ref.listen<_AuthState>(_authProvider, (prev, next) {
+    ref.listen<_AuthState>(_authProvider, (prev, next) async {
       if (next.success && mounted) {
-        context.go('/dashboard');
+        final prefs = await SharedPreferences.getInstance();
+        final isSu = prefs.getBool('is_superuser') ?? false;
+        ref.read(superuserProvider.notifier).state = isSu;
+        if (mounted) context.go('/dashboard');
       }
     });
 
