@@ -9,6 +9,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
+import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../theme/fenix_theme.dart';
 
 // ── Blacklist ─────────────────────────────────────────────────────────────────
@@ -614,16 +616,15 @@ class _PairCardState extends State<_PairCard> {
     );
   }
 
-  void _showGridConfig(BuildContext context, ScannerPair p) {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: FenixColors.card,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (_) => _GridConfigSheet(pair: p),
-    );
+  void _showGridConfig(BuildContext context, ScannerPair p) async {
+    // Salvar params nas prefs para GridConfig ler no initState
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('grid_init_symbol',   p.symbol);
+    await prefs.setString('grid_init_exchange',  'Binance');
+    await prefs.setDouble('grid_init_upper',     p.bbUpper);
+    await prefs.setDouble('grid_init_lower',     p.bbLower);
+    await prefs.setInt   ('grid_init_grids',     p.grid.niveis);
+    if (context.mounted) context.push('/grids/config');
   }
 
   Color _gradeColor(String grade) => switch (grade) {

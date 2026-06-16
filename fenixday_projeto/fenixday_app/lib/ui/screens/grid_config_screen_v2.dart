@@ -66,11 +66,62 @@ final _paramsProvider = StateNotifierProvider<_GridParamsNotifier, _GridParams>(
 );
 
 // ── Tela ─────────────────────────────────────────────────────────────────────
-class GridConfigScreenV2 extends ConsumerWidget {
-  const GridConfigScreenV2({super.key});
+class GridConfigScreenV2 extends ConsumerStatefulWidget {
+  final String? initialSymbol;
+  final String? initialExchange;
+  final double? initialUpper;
+  final double? initialLower;
+  final int? initialGrids;
+
+  const GridConfigScreenV2({
+    super.key,
+    this.initialSymbol,
+    this.initialExchange,
+    this.initialUpper,
+    this.initialLower,
+    this.initialGrids,
+  });
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<GridConfigScreenV2> createState() => _GridConfigScreenV2State();
+}
+
+class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
+  @override
+  void initState() {
+    super.initState();
+    _loadFromPrefs();
+  }
+
+  Future<void> _loadFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final symbol   = prefs.getString('grid_init_symbol');
+    final exchange = prefs.getString('grid_init_exchange');
+    final upper    = prefs.getDouble('grid_init_upper');
+    final lower    = prefs.getDouble('grid_init_lower');
+    final grids    = prefs.getInt   ('grid_init_grids');
+
+    if (!mounted) return;
+
+    if (symbol != null) {
+      ref.read(_symbolProvider.notifier).state = symbol;
+      // Limpar após usar
+      await prefs.remove('grid_init_symbol');
+    }
+    if (exchange != null) {
+      ref.read(_exchangeProvider.notifier).state = exchange;
+      await prefs.remove('grid_init_exchange');
+    }
+    if (upper != null && lower != null) {
+      ref.read(_paramsProvider.notifier).setFromIa(lower, upper, grids ?? 20);
+      await prefs.remove('grid_init_upper');
+      await prefs.remove('grid_init_lower');
+      await prefs.remove('grid_init_grids');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final w         = MediaQuery.of(context).size.width;
     final isTablet  = w >= _kTablet;
     final isDesktop = w >= _kDesktop;
