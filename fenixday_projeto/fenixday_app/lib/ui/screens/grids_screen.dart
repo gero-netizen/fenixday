@@ -8,6 +8,8 @@ import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:fl_chart/fl_chart.dart';
+import 'package:go_router/go_router.dart';
 import '../theme/fenix_theme.dart';
 
 const _baseUrl = 'https://fenixday.info/api/v1';
@@ -153,6 +155,20 @@ class _GridsApi {
   }
 }
 
+// ── Provider de preço ────────────────────────────────────────────────────────
+
+final _gridPriceProvider = FutureProvider.family<double?, String>((ref, symbol) async {
+  try {
+    final sym = symbol.replaceAll('/', '').replaceAll('USDT', '') + 'USDT';
+    final r = await http.get(Uri.parse(
+        'https://api.binance.com/api/v3/ticker/price?symbol=$sym'));
+    if (r.statusCode == 200) {
+      return double.tryParse(jsonDecode(r.body)['price'].toString());
+    }
+  } catch (_) {}
+  return null;
+});
+
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 class _GridsNotifier extends StateNotifier<AsyncValue<List<GridModel>>> {
@@ -218,6 +234,26 @@ class GridsScreen extends ConsumerWidget {
                           fontWeight: FontWeight.w500,
                           color: FenixColors.textPrimary)),
                 ),
+                // Novo Grid
+                GestureDetector(
+                  onTap: () => context.push('/grids/config'),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: FenixColors.yellowBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: FenixColors.yellow.withOpacity(.3), width: .5),
+                    ),
+                    child: const Row(children: [
+                      Icon(Icons.add, size: 14, color: FenixColors.yellow),
+                      SizedBox(width: 4),
+                      Text('Novo Grid', style: TextStyle(
+                          fontSize: 12, color: FenixColors.yellow,
+                          fontWeight: FontWeight.w500)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(width: 8),
                 // Refresh
                 gridsAsync.when(
                   loading: () => const SizedBox(width: 20, height: 20,
@@ -341,41 +377,96 @@ class _ResumoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'pt_BR');
-    final totalCapital = grids.fold(0.0, (s, g) => s + g.capitalUsdt);
-    final totalLucro   = grids.fold(0.0, (s, g) => s + g.lucroRealizado);
-    final totalCiclos  = grids.fold(0, (s, g) => s + g.ciclosFechados);
-    final lucroPercent = totalCapital > 0 ? (totalLucro / totalCapital) * 100 : 0;
+    final totalCapital = grids.fold<double>(0.0, (s, g) => s + g.capitalUsdt);
+    final totalLucro   = grids.fold<double>(0.0, (s, g) => s + g.lucroRealizado);
+    final totalCiclos  = grids.fold<int>(0, (s, g) => s + g.ciclosFechados);
+    final lucroPercent = totalCapital > 0 ? (totalLucro / totalCapital) * 100 : 0.0;
+
+    // Gráfico simulado de lucro acumulado (por grid)
+    final spots = grids.asMap().entries.map((e) =>
+        FlSpot(e.key.toDouble(), e.value.lucroRealizado)).toList();
+    final hasChart = spots.length >= 2;
 
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: FenixColors.card,
         borderRadius: BorderRadius.circular(10),
-        border: Border(top: BorderSide(color: FenixColors.yellow, width: 2),
-            left: BorderSide(color: FenixColors.border, width: .5),
-            right: BorderSide(color: FenixColors.border, width: .5),
-            bottom: BorderSide(color: FenixColors.border, width: .5)),
+        border: Border(
+          top:    const BorderSide(color: FenixColors.yellow, width: 2),
+          left:   BorderSide(color: FenixColors.border, width: .5),
+          right:  BorderSide(color: FenixColors.border, width: .5),
+          bottom: BorderSide(color: FenixColors.border, width: .5),
+        ),
       ),
-      child: Row(children: [
-        Expanded(child: _ResumoItem(
-          label: 'Capital total',
-          value: '\$${fmt.format(totalCapital)}',
-          color: FenixColors.yellow,
-        )),
-        Container(width: .5, height: 40, color: FenixColors.border),
-        Expanded(child: _ResumoItem(
-          label: 'Lucro realizado',
-          value: '+\$${fmt.format(totalLucro)}',
-          color: FenixColors.green,
-          sub: '+${lucroPercent.toStringAsFixed(2)}%',
-        )),
-        Container(width: .5, height: 40, color: FenixColors.border),
-        Expanded(child: _ResumoItem(
-          label: 'Ciclos fechados',
-          value: '$totalCiclos',
-          color: FenixColors.blue,
-          sub: '${grids.length} grids',
-        )),
+      child: Column(children: [
+        Row(children: [
+          Expanded(child: _ResumoItem(
+            label: 'Capital total',
+            value: '\$${fmt.format(totalCapital)}',
+            color: FenixColors.yellow,
+          )),
+          Container(width: .5, height: 40, color: FenixColors.border),
+          Expanded(child: _ResumoItem(
+            label: 'Lucro realizado',
+            value: '+\$${fmt.format(totalLucro)}',
+            color: FenixColors.green,
+            sub: '+${lucroPercent.toStringAsFixed(2)}%',
+          )),
+          Container(width: .5, height: 40, color: FenixColors.border),
+          Expanded(child: _ResumoItem(
+            label: 'Ciclos fechados',
+            value: '$totalCiclos',
+            color: FenixColors.blue,
+            sub: '${grids.length} grids',
+          )),
+        ]),
+        if (hasChart) ...[
+          const SizedBox(height: 14),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Lucro por grid', style: TextStyle(
+                fontSize: 10, color: FenixColors.textMuted)),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 80,
+            child: BarChart(BarChartData(
+              gridData: FlGridData(show: false),
+              borderData: FlBorderData(show: false),
+              titlesData: FlTitlesData(
+                bottomTitles: AxisTitles(sideTitles: SideTitles(
+                  showTitles: true,
+                  getTitlesWidget: (v, _) {
+                    final i = v.toInt();
+                    if (i < grids.length) {
+                      final sym = grids[i].symbol.replaceAll('USDT', '');
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(sym, style: const TextStyle(
+                            fontSize: 8, color: FenixColors.textMuted)),
+                      );
+                    }
+                    return const SizedBox.shrink();
+                  },
+                )),
+                leftTitles:   const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                rightTitles:  const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                topTitles:    const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+              ),
+              barGroups: grids.asMap().entries.map((e) => BarChartGroupData(
+                x: e.key,
+                barRods: [BarChartRodData(
+                  toY: e.value.lucroRealizado,
+                  color: e.value.lucroRealizado >= 0
+                      ? FenixColors.green : FenixColors.red,
+                  width: 14,
+                  borderRadius: BorderRadius.circular(3),
+                )],
+              )).toList(),
+            )),
+          ),
+        ],
       ]),
     );
   }

@@ -11,6 +11,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import '../theme/fenix_theme.dart';
 import '../widgets/chart/candlestick_chart.dart';
 
@@ -20,7 +23,44 @@ const double _kDesktop = 1100.0;
 
 // ── Providers ────────────────────────────────────────────────────────────────
 final _tfProvider    = StateProvider<String>((ref) => '1h');
+
+// ── Provider de candles reais ─────────────────────────────────────────────────
+final _symbolProvider   = StateProvider<String>((ref) => 'BTCUSDT');
+final _exchangeProvider = StateProvider<String>((ref) => 'Binance');
+
+const _kPopularPairs = [
+  'BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT',
+  'ADAUSDT','DOGEUSDT','AVAXUSDT','DOTUSDT','LINKUSDT',
+  'MATICUSDT','LTCUSDT','UNIUSDT','ATOMUSDT','TRXUSDT',
+];
+
+const _kExchanges = ['Binance', 'Bybit'];
+
+final _candlesProvider = FutureProvider.family<List<CandleData>, String>((ref, key) async {
+  final parts    = key.split('|');
+  final symbol   = parts[0];
+  final interval = parts[1];
+  try {
+    final r = await http.get(Uri.parse(
+      'https://api.binance.com/api/v3/klines?symbol=$symbol&interval=$interval&limit=80',
+    )).timeout(const Duration(seconds: 10));
+    if (r.statusCode != 200) return _generateMockCandles();
+    final List data = jsonDecode(r.body);
+    return data.map((k) => CandleData(
+      time:   DateTime.fromMillisecondsSinceEpoch(k[0] as int),
+      open:   double.parse(k[1].toString()),
+      high:   double.parse(k[2].toString()),
+      low:    double.parse(k[3].toString()),
+      close:  double.parse(k[4].toString()),
+      volume: double.parse(k[5].toString()),
+    )).toList();
+  } catch (_) {
+    return _generateMockCandles();
+  }
+});
 final _toolProvider  = StateProvider<String>((ref) => 'crosshair');
+final _modeProvider = StateProvider<String>((ref) => 'manual'); // 'ia' | 'manual'
+
 final _paramsProvider = StateNotifierProvider<_GridParamsNotifier, _GridParams>(
   (ref) => _GridParamsNotifier(),
 );
@@ -67,52 +107,158 @@ class GridConfigScreenV2 extends ConsumerWidget {
 class _PairHeader extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final fmt = NumberFormat('#,##0.00', 'pt_BR');
+    final symbol   = ref.watch(_symbolProvider);
+    final exchange = ref.watch(_exchangeProvider);
+    final tf       = ref.watch(_tfProvider);
+    final asyncCandles = ref.watch(_candlesProvider('$symbol|$tf|$exchange'));
+    final displayPair  = symbol.replaceAll('USDT', '/USDT');
+
+    double? price, chgPct;
+    asyncCandles.whenData((candles) {
+      if (candles.length >= 2) {
+        price   = candles.last.close;
+        final prev = candles[candles.length - 2];
+        chgPct  = prev.close > 0 ? (candles.last.close - prev.close) / prev.close * 100 : 0;
+      }
+    });
+
     return Container(
       color: FenixColors.surface,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      child: Row(
-        children: [
-          // Ícone BTC
-          Container(
-            width: 26, height: 26,
-            decoration: const BoxDecoration(
-              color: FenixColors.yellow, shape: BoxShape.circle,
+      child: Row(children: [
+        // Seletor de par
+        GestureDetector(
+          onTap: () => _showPairSelector(context, ref),
+          child: Row(children: [
+            Container(
+              width: 26, height: 26,
+              decoration: const BoxDecoration(color: FenixColors.yellow, shape: BoxShape.circle),
+              child: Center(child: Text(
+                symbol.substring(0, 1),
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF1A0A00)),
+              )),
             ),
-            child: const Center(
-              child: Text('₿', style: TextStyle(fontSize: 13, color: Color(0xFF1A0A00))),
-            ),
-          ),
-          const SizedBox(width: 7),
-          // Par + dropdown
-          Row(
-            children: [
-              const Text('BTC/USDT',
-                  style: TextStyle(
-                      fontFamily: 'RobotoMono', fontSize: 13,
-                      fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
-              const Icon(Icons.arrow_drop_down, size: 16, color: FenixColors.textMuted),
-            ],
-          ),
-          const SizedBox(width: 12),
-          // Preço + variação
-          const Text('66.842,19',
-              style: TextStyle(
-                  fontFamily: 'RobotoMono', fontSize: 17,
+            const SizedBox(width: 6),
+            Text(displayPair, style: const TextStyle(
+                fontFamily: 'RobotoMono', fontSize: 13,
+                fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+            const Icon(Icons.arrow_drop_down, size: 16, color: FenixColors.yellow),
+          ]),
+        ),
+        const SizedBox(width: 10),
+
+        // Preço atual
+        if (price != null) ...[
+          Text(NumberFormat('#,##0.00').format(price),
+              style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 16,
                   fontWeight: FontWeight.w500, color: FenixColors.green)),
           const SizedBox(width: 6),
-          const Text('+1,25%',
-              style: TextStyle(
-                  fontFamily: 'RobotoMono', fontSize: 11, color: FenixColors.green)),
-          const Spacer(),
-          // Estatísticas 24h
-          Wrap(spacing: 16, children: [
-            _StatMini('24h Máxima', '67.189,00'),
-            _StatMini('24h Mínima', '65.812,10'),
-            _StatMini('Volume 24h (BTC)', '18.573,25'),
-            _StatMini('Volume 24h (USDT)', '1,23B'),
-          ]),
-        ],
+          Text('${chgPct! >= 0 ? "+" : ""}${chgPct!.toStringAsFixed(2)}%',
+              style: TextStyle(fontFamily: 'RobotoMono', fontSize: 11,
+                  color: chgPct! >= 0 ? FenixColors.green : FenixColors.red)),
+        ] else
+          const SizedBox(width: 14, height: 14,
+              child: CircularProgressIndicator(strokeWidth: 1.5, color: FenixColors.yellow)),
+
+        const Spacer(),
+
+        // Seletor de exchange
+        GestureDetector(
+          onTap: () => _showExchangeSelector(context, ref),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: FenixColors.yellowBg,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: FenixColors.yellow.withOpacity(.3), width: .5),
+            ),
+            child: Row(children: [
+              Text(exchange, style: const TextStyle(
+                  fontSize: 11, color: FenixColors.yellow, fontWeight: FontWeight.w500)),
+              const Icon(Icons.arrow_drop_down, size: 14, color: FenixColors.yellow),
+            ]),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  void _showPairSelector(BuildContext ctx, WidgetRef ref) {
+    final current = ref.read(_symbolProvider);
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: FenixColors.card,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Selecionar par', style: TextStyle(
+              fontSize: 14, fontWeight: FontWeight.w600, color: FenixColors.textPrimary)),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: _kPopularPairs.map((p) {
+            final selected = p == current;
+            return GestureDetector(
+              onTap: () {
+                ref.read(_symbolProvider.notifier).state = p;
+                Navigator.pop(ctx);
+              },
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: selected ? FenixColors.yellowBg : FenixColors.bg,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: selected ? FenixColors.yellow : FenixColors.border,
+                    width: selected ? 1 : 0.5,
+                  ),
+                ),
+                child: Text(p.replaceAll('USDT', '/USDT'), style: TextStyle(
+                    fontSize: 12,
+                    color: selected ? FenixColors.yellow : FenixColors.textSecondary,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
+              ),
+            );
+          }).toList()),
+          const SizedBox(height: 16),
+        ]),
+      ),
+    );
+  }
+
+  void _showExchangeSelector(BuildContext ctx, WidgetRef ref) {
+    final current = ref.read(_exchangeProvider);
+    showModalBottomSheet(
+      context: ctx,
+      backgroundColor: FenixColors.card,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Text('Selecionar corretora', style: TextStyle(
+              fontSize: 14, fontWeight: FontWeight.w600, color: FenixColors.textPrimary)),
+          const SizedBox(height: 12),
+          ..._kExchanges.map((e) => ListTile(
+            onTap: () { ref.read(_exchangeProvider.notifier).state = e; Navigator.pop(ctx); },
+            leading: Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: e == current ? FenixColors.yellowBg : FenixColors.bg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: e == current ? FenixColors.yellow : FenixColors.border),
+              ),
+              child: Center(child: Text(e[0], style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: e == current ? FenixColors.yellow : FenixColors.textMuted))),
+            ),
+            title: Text(e, style: TextStyle(
+                fontSize: 13,
+                color: e == current ? FenixColors.yellow : FenixColors.textPrimary)),
+            trailing: e == current ? const Icon(Icons.check, color: FenixColors.yellow, size: 16) : null,
+          )),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }
@@ -393,44 +539,82 @@ class _ChartArea extends ConsumerWidget {
   const _ChartArea({this.showVerticalToolbar = true});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final params = ref.watch(_paramsProvider);
-    final candles = _generateMockCandles();
+   Widget build(BuildContext context, WidgetRef ref) {
+    final params  = ref.watch(_paramsProvider);
+    final tf      = ref.watch(_tfProvider);
+    final symbol  = ref.watch(_symbolProvider);
+    final exchange = ref.watch(_exchangeProvider);
+    final asyncCandles = ref.watch(_candlesProvider('$symbol|$tf|$exchange'));
 
     return Container(
       color: FenixColors.bg,
       child: Column(
         children: [
-          // Info OHLC no topo do gráfico (estilo TradingView)
-          Container(
-            color: FenixColors.bg,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            child: Row(children: [
-              const Text('BTC/USDT · 1h · BINANCE',
-                  style: TextStyle(
-                      fontFamily: 'RobotoMono',
-                      fontSize: 10, color: FenixColors.textMuted)),
-              const SizedBox(width: 10),
-              _ohlc('Abr', '67.021,10'),
-              _ohlc('Máx', '67.089,20', color: FenixColors.green),
-              _ohlc('Mín', '66.742,10', color: FenixColors.red),
-              _ohlc('Fch', '66.842,19'),
-              const Text(' −178,91 (−0,27%)',
-                  style: TextStyle(
-                      fontFamily: 'RobotoMono',
-                      fontSize: 10, color: FenixColors.red)),
-            ]),
+          // Info OHLC
+          asyncCandles.when(
+            loading: () => Container(
+              color: FenixColors.bg,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: const Text('Carregando...', style: TextStyle(
+                  fontFamily: 'RobotoMono', fontSize: 10, color: FenixColors.textMuted)),
+            ),
+            error: (_, __) => const SizedBox(height: 22),
+            data: (candles) {
+              if (candles.isEmpty) return const SizedBox(height: 22);
+              final last   = candles.last;
+              final prev   = candles.length > 1 ? candles[candles.length - 2] : last;
+              final chg    = last.close - prev.close;
+              final chgPct = prev.close > 0 ? chg / prev.close * 100 : 0.0;
+              final fmt    = (double v) => v >= 1000 ? v.toStringAsFixed(2) : v.toStringAsFixed(4);
+              return Container(
+                color: FenixColors.bg,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                child: Row(children: [
+                  Text('${symbol.replaceAll('USDT', '/USDT')} · $tf · BINANCE',
+                      style: const TextStyle(fontFamily: 'RobotoMono',
+                          fontSize: 10, color: FenixColors.textMuted)),
+                  const SizedBox(width: 10),
+                  _ohlc('Abr', fmt(last.open)),
+                  _ohlc('Máx', fmt(last.high), color: FenixColors.green),
+                  _ohlc('Mín', fmt(last.low),  color: FenixColors.red),
+                  _ohlc('Fch', fmt(last.close)),
+                  Text(' ${chg >= 0 ? "+" : ""}${chg.toStringAsFixed(2)} (${chgPct.toStringAsFixed(2)}%)',
+                      style: TextStyle(fontFamily: 'RobotoMono', fontSize: 10,
+                          color: chg >= 0 ? FenixColors.green : FenixColors.red)),
+                ]),
+              );
+            },
           ),
 
           // Gráfico
           Expanded(
-            child: CandlestickChart(
-              candles: candles,
-              upperBound:   params.upperPrice,
-              lowerBound:   params.lowerPrice,
-              currentPrice: 66842.19,
-              gridLevels:   params.computedLevels,
-              visibleCandles: 60,
+            child: asyncCandles.when(
+              loading: () => const Center(child: CircularProgressIndicator(
+                  color: FenixColors.yellow, strokeWidth: 2)),
+              error: (_, __) => CandlestickChart(
+                candles: _generateMockCandles(),
+                upperBound: params.upperPrice,
+                lowerBound: params.lowerPrice,
+                currentPrice: null,
+                visibleCandles: 60,
+              ),
+              data: (candles) {
+                // Auto-inicializar range se ainda está no default
+                if (candles.isNotEmpty && params.upperPrice == 68000 && params.lowerPrice == 62000) {
+                  final price = candles.last.close;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    ref.read(_paramsProvider.notifier).updateFromPrice(price);
+                  });
+                }
+                return CandlestickChart(
+                  candles: candles,
+                  upperBound:   params.upperPrice,
+                  lowerBound:   params.lowerPrice,
+                  currentPrice: candles.isNotEmpty ? candles.last.close : null,
+                  gridLevels:   params.computedLevels,
+                  visibleCandles: 60,
+                );
+              },
             ),
           ),
 
@@ -545,19 +729,29 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Toggle Estratégias / Manual
-                    Container(
-                      decoration: BoxDecoration(
-                        color: FenixColors.bg,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: FenixColors.border, width: .5),
-                      ),
-                      child: Row(children: [
-                        _ToggleTab(label: 'Estratégias inteligentes', active: false,
-                            onTap: () {}),
-                        _ToggleTab(label: 'Manual', active: true, onTap: () {}),
-                      ]),
-                    ),
+                    // Toggle IA / Manual
+                    Consumer(builder: (ctx, ref, _) {
+                      final mode = ref.watch(_modeProvider);
+                      return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            color: FenixColors.bg,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: FenixColors.border, width: .5),
+                          ),
+                          child: Row(children: [
+                            _ToggleTab(label: '🤖 Indicação IA', active: mode == 'ia',
+                                onTap: () => ref.read(_modeProvider.notifier).state = 'ia'),
+                            _ToggleTab(label: 'Manual', active: mode == 'manual',
+                                onTap: () => ref.read(_modeProvider.notifier).state = 'manual'),
+                          ]),
+                        ),
+                        if (mode == 'ia') ...[
+                          const SizedBox(height: 10),
+                          _IaRecommendation(),
+                        ],
+                      ]);
+                    }),
                     const SizedBox(height: 12),
 
                     // Intervalo de preço
@@ -943,23 +1137,13 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                     const SizedBox(height: 20),
 
                     // Botão Criar
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: FenixColors.textPrimary,
-                          foregroundColor: FenixColors.bg,
-                          padding: const EdgeInsets.symmetric(vertical: 13),
-                          shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30)),
-                          elevation: 0,
-                        ),
-                        onPressed: () {},
-                        child: const Text('Criar',
-                            style: TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w500)),
-                      ),
-                    ),
+                    Consumer(builder: (ctx, ref, _) {
+                      final symbol   = ref.watch(_symbolProvider);
+                      final exchange = ref.watch(_exchangeProvider);
+                      final params   = ref.watch(_paramsProvider);
+                      return _CreateButton(
+                        symbol: symbol, exchange: exchange, params: params);
+                    }),
                   ],
                 ),
               ),
@@ -1064,6 +1248,98 @@ class _SumCard extends StatelessWidget {
 }
 
 // ── Widgets de formulário ─────────────────────────────────────────────────────
+// ── Recomendação IA ──────────────────────────────────────────────────────────
+class _IaRecommendation extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final symbol   = ref.watch(_symbolProvider);
+    final exchange = ref.watch(_exchangeProvider);
+    // Parâmetros sugeridos pela IA (baseados no par selecionado)
+    final suggestions = _getIaSuggestion(symbol);
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0D1F12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: FenixColors.green.withOpacity(.3)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.auto_awesome, size: 14, color: FenixColors.green),
+          const SizedBox(width: 6),
+          const Text('Sugestão da IA', style: TextStyle(
+              fontSize: 12, fontWeight: FontWeight.w600, color: FenixColors.green)),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: FenixColors.green.withOpacity(.1),
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Text('ADX ${suggestions['adx']}', style: const TextStyle(
+                fontSize: 9, color: FenixColors.green, fontFamily: 'RobotoMono')),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        Row(children: [
+          _IaStat('Range sugerido', (suggestions['lower'] ?? '—') + ' – ' + (suggestions['upper'] ?? '—')),
+          _IaStat('Grids', suggestions['grids'] ?? '—'),
+          _IaStat('Margem/ciclo', (suggestions['margin'] ?? '—') + '%'),
+        ]),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: FenixColors.green,
+              side: BorderSide(color: FenixColors.green.withOpacity(.4), width: .5),
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+            ),
+            icon: const Icon(Icons.download_outlined, size: 14),
+            label: const Text('Aplicar sugestão da IA', style: TextStyle(fontSize: 11)),
+            onPressed: () {
+              final notifier = ref.read(_paramsProvider.notifier);
+              notifier.setFromIa(
+                double.parse(suggestions['lower']!.replaceAll(',','.')),
+                double.parse(suggestions['upper']!.replaceAll(',','.')),
+                int.parse(suggestions['grids']!),
+              );
+            },
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Map<String, String> _getIaSuggestion(String symbol) {
+    // Sugestões baseadas no par (em produção viria do scanner backend)
+    final base = switch (symbol) {
+      'BTCUSDT'  => {'lower': '62000', 'upper': '72000', 'grids': '25', 'margin': '0.38', 'adx': '28.4'},
+      'ETHUSDT'  => {'lower': '3100',  'upper': '3800',  'grids': '20', 'margin': '0.35', 'adx': '31.2'},
+      'BNBUSDT'  => {'lower': '550',   'upper': '680',   'grids': '20', 'margin': '0.40', 'adx': '25.8'},
+      'SOLUSDT'  => {'lower': '140',   'upper': '185',   'grids': '18', 'margin': '0.42', 'adx': '33.1'},
+      'XRPUSDT'  => {'lower': '0.52',  'upper': '0.65',  'grids': '15', 'margin': '0.37', 'adx': '22.5'},
+      _          => {'lower': '—',     'upper': '—',     'grids': '20', 'margin': '0.38', 'adx': '—'},
+    };
+    return base;
+  }
+}
+
+class _IaStat extends StatelessWidget {
+  final String label, value;
+  const _IaStat(this.label, this.value);
+  @override
+  Widget build(BuildContext context) => Expanded(child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(label, style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+      Text(value, style: const TextStyle(fontSize: 11, color: FenixColors.green,
+          fontFamily: 'RobotoMono', fontWeight: FontWeight.w500)),
+    ],
+  ));
+}
+
 class _ToggleTab extends StatelessWidget {
   final String label;
   final bool active;
@@ -1203,9 +1479,9 @@ class _GridParams {
   final bool reinvest, trailingUp, trailingDown, tpsl;
 
   const _GridParams({
-    this.upperPrice    = 1.6,
-    this.lowerPrice    = 0.99,
-    this.numGrids      = 70,
+    this.upperPrice    = 68000,
+    this.lowerPrice    = 62000,
+    this.numGrids      = 25,
     this.marginMin     = 0.35,
     this.marginMax     = 0.48,
     this.allocatedUsdt = 0.0,
@@ -1251,6 +1527,169 @@ class _GridParamsNotifier extends StateNotifier<_GridParams> {
   void setTrailingUp(bool v) => state = state.copyWith(trailingUp: v);
   void setTrailingDown(bool v) => state = state.copyWith(trailingDown: v);
   void setTpSl(bool v)       => state = state.copyWith(tpsl: v);
+  void updateFromPrice(double price) {
+    // Ajusta range automaticamente: ±8% do preço atual
+    final upper = price * 1.08;
+    final lower = price * 0.92;
+    state = state.copyWith(upperPrice: upper, lowerPrice: lower, numGrids: 25);
+  }
+  void setFromIa(double lower, double upper, int grids) => state = state.copyWith(
+    lowerPrice: lower, upperPrice: upper, numGrids: grids);
+}
+
+// ── Botão Criar Grid ─────────────────────────────────────────────────────────
+
+class _CreateButton extends ConsumerStatefulWidget {
+  final String symbol, exchange;
+  final _GridParams params;
+  const _CreateButton({required this.symbol, required this.exchange, required this.params});
+  @override
+  ConsumerState<_CreateButton> createState() => _CreateButtonState();
+}
+
+class _CreateButtonState extends ConsumerState<_CreateButton> {
+  bool _loading = false;
+
+  Future<void> _create(bool modoReal) async {
+    setState(() => _loading = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('access_token') ?? '';
+      final payload = {
+        'symbol':           widget.symbol,
+        'exchange':         widget.exchange,
+        'capital_usdt':     widget.params.allocatedUsdt > 0 ? widget.params.allocatedUsdt : 100.0,
+        'niveis':           widget.params.numGrids,
+        'limite_superior':  widget.params.upperPrice,
+        'limite_inferior':  widget.params.lowerPrice,
+        'espacamento_pct':  widget.params.currentMargin,
+        'margem_liquida_pct': widget.params.currentMargin,
+        'modo_real':        modoReal,
+      };
+      final r = await http.post(
+        Uri.parse('https://fenixday.info/api/v1/grids'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      ).timeout(const Duration(seconds: 15));
+
+      if (!mounted) return;
+      if (r.statusCode == 201) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Grid ${widget.symbol} criado em modo ${modoReal ? "REAL" : "DEMO"}!'),
+          backgroundColor: FenixColors.green,
+        ));
+        Navigator.maybePop(context);
+      } else {
+        final err = jsonDecode(r.body)['detail'] ?? r.body;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Erro: $err'),
+          backgroundColor: FenixColors.red,
+        ));
+      }
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Erro: $e'),
+        backgroundColor: FenixColors.red,
+      ));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _showModeDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: const Text('Modo de operação', style: TextStyle(
+            fontSize: 15, color: FenixColors.textPrimary)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('${widget.symbol} · ${widget.exchange}',
+              style: const TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+          const SizedBox(height: 4),
+          Text(
+            'Range: \$${widget.params.lowerPrice.toStringAsFixed(2)} – \$${widget.params.upperPrice.toStringAsFixed(2)}  |  ${widget.params.numGrids} grids',
+            style: const TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+          const SizedBox(height: 16),
+          // Modo Demo
+          GestureDetector(
+            onTap: () { Navigator.of(dialogCtx).pop(); _create(false); },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: FenixColors.yellowBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: FenixColors.yellow.withOpacity(.3)),
+              ),
+              child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Icon(Icons.science_outlined, size: 16, color: FenixColors.yellow),
+                  SizedBox(width: 8),
+                  Text('Modo Demo (Testnet)', style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600, color: FenixColors.yellow)),
+                ]),
+                SizedBox(height: 4),
+                Text('Usa a Testnet da exchange. Sem capital real.',
+                    style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+              ]),
+            ),
+          ),
+          // Modo Real
+          GestureDetector(
+            onTap: () { Navigator.of(dialogCtx).pop(); _create(true); },
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: FenixColors.greenBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: FenixColors.green.withOpacity(.3)),
+              ),
+              child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Icon(Icons.rocket_launch_outlined, size: 16, color: FenixColors.green),
+                  SizedBox(width: 8),
+                  Text('Modo Real', style: TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600, color: FenixColors.green)),
+                ]),
+                SizedBox(height: 4),
+                Text('Executa ordens reais na exchange. Requer licença ativa.',
+                    style: TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+              ]),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Cancelar', style: TextStyle(color: FenixColors.textMuted)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: double.infinity,
+    child: ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: FenixColors.yellow,
+        foregroundColor: const Color(0xFF1A0A00),
+        padding: const EdgeInsets.symmetric(vertical: 13),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
+        elevation: 0,
+      ),
+      onPressed: _loading ? null : _showModeDialog,
+      child: _loading
+          ? const SizedBox(width: 18, height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF1A0A00)))
+          : const Text('Criar', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+    ),
+  );
 }
 
 // ── Mock de candles ───────────────────────────────────────────────────────────
