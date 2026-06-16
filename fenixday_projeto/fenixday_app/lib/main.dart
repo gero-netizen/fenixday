@@ -22,6 +22,7 @@ import 'ui/screens/admin_screen_v2.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
 import 'ui/screens/privacy_screen.dart';
+import 'ui/screens/client_profile_screen.dart';
 import 'ui/screens/scanner_screen.dart';
 import 'ui/screens/grids_screen.dart';
 
@@ -112,6 +113,11 @@ final _router = GoRouter(
       path: '/privacidade',
       name: 'privacidade',
       builder: (_, __) => PrivacySettingsScreen(),
+    ),
+    GoRoute(
+      path: '/minha-conta',
+      name: 'minha-conta',
+      builder: (_, __) => const ClientProfileScreen(),
     ),
   ],
 );
@@ -290,6 +296,16 @@ class _SettingsScreen extends StatelessWidget {
             color: FenixColors.blue,
             onTap: () => context.push('/top-grids'),
           ),
+          Consumer(builder: (context, ref, _) {
+            final isSuperuser = ref.watch(superuserProvider);
+            if (isSuperuser) return const SizedBox.shrink();
+            return _SettingsTile(
+              icon:  Icons.person_outline,
+              label: 'Minha Conta',
+              color: FenixColors.yellow,
+              onTap: () => context.push('/minha-conta'),
+            );
+          }),
           _SettingsTile(
             icon:  Icons.lock_outline,
             label: 'Privacidade e Dados (LGPD)',

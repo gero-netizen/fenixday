@@ -32,15 +32,18 @@ Future<Map<String, String>> _authHeader() async {
 
 class _AdminUser {
   final String id, email, planName;
-  final String licenseStatus;   // active | pending | expired | exempt | lifetime
+  final String licenseStatus;
   final double tradedVolume;
   final DateTime createdAt;
   final DateTime? lastLogin;
   final bool isBanned;
+  final bool isSuperuser;
+  final String? telegram;
   const _AdminUser({
     required this.id, required this.email, required this.planName,
     required this.licenseStatus, required this.tradedVolume,
     required this.createdAt, this.lastLogin, this.isBanned = false,
+    this.isSuperuser = false, this.telegram,
   });
 }
 
@@ -118,12 +121,14 @@ final _usersProvider = FutureProvider<List<_AdminUser>>((ref) async {
   return data.map((u) => _AdminUser(
     id:            u['id'] ?? '',
     email:         u['email'] ?? '',
-    planName:      u['current_tier'] ?? 'isento',
-    licenseStatus: u['license_status'] ?? 'pending',
+    planName:      u['plan'] ?? 'exempt',
+    licenseStatus: u['license_status']?.toString() ?? 'pending',
     tradedVolume:  (u['traded_volume'] ?? 0).toDouble(),
     createdAt:     DateTime.tryParse(u['created_at'] ?? '') ?? DateTime.now(),
     lastLogin:     u['last_login'] != null ? DateTime.tryParse(u['last_login']) : null,
     isBanned:      u['is_active'] == false,
+    isSuperuser:   u['is_superuser'] == true,
+    telegram:      u['telegram'],
   )).toList();
 });
 
@@ -558,8 +563,16 @@ class _UserRow extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(children: [
-              Text(user.email, style: const TextStyle(
-                  fontSize: 12, color: FenixColors.textPrimary)),
+              if (user.isSuperuser) ...[
+                const Icon(Icons.shield, size: 11, color: FenixColors.violet),
+                const SizedBox(width: 4),
+              ],
+              Flexible(child: Text(user.email, style: TextStyle(
+                  fontSize: 12,
+                  color: _planColor(user.planName),
+                  fontWeight: FontWeight.w500),
+                overflow: TextOverflow.ellipsis,
+              )),
               if (user.isBanned) ...[
                 const SizedBox(width: 6),
                 const Icon(Icons.block, size: 12, color: FenixColors.red),
@@ -570,9 +583,12 @@ class _UserRow extends ConsumerWidget {
                   style: const TextStyle(fontFamily: 'RobotoMono',
                       fontSize: 10, color: FenixColors.textMuted)),
               const Text(' · ', style: TextStyle(color: FenixColors.textMuted)),
-              Text(user.planName,
-                  style: const TextStyle(fontSize: 10,
-                      color: FenixColors.textMuted)),
+              Text(_planLabel(user.planName),
+                  style: TextStyle(fontSize: 10, color: _planColor(user.planName))),
+              if (user.telegram != null) ...[
+                const Text(' · ', style: TextStyle(color: FenixColors.textMuted)),
+                const Icon(Icons.telegram, size: 10, color: Color(0xFF0088CC)),
+              ],
             ]),
           ],
         )),
@@ -602,6 +618,9 @@ class _UserRow extends ConsumerWidget {
             const PopupMenuDivider(),
             _menuItem('revoke',    'Revogar licença',      FenixColors.orange),
             _menuItem('ban',       user.isBanned ? 'Desbanir conta' : 'Banir conta', FenixColors.red),
+            const PopupMenuDivider(),
+            _menuItem('edit',      'Editar usuário',       FenixColors.blue),
+            _menuItem('delete',    'Excluir cadastro',     FenixColors.red),
           ],
         ),
       ]),
@@ -615,6 +634,9 @@ class _UserRow extends ConsumerWidget {
       );
 
   void _handleAction(BuildContext ctx, String action, _AdminUser user) async {
+    if (action == 'edit') { _showEditDialog(ctx, user); return; }
+    if (action == 'delete') { _confirmDelete(ctx, user); return; }
+
     final headers = await _authHeader();
     final r = await http.patch(
       Uri.parse('$_adminBase/users/${user.id}/license'),
@@ -636,13 +658,156 @@ class _UserRow extends ConsumerWidget {
     }
   }
 
+  void _showEditDialog(BuildContext ctx, _AdminUser user) {
+    final emailCtrl    = TextEditingController(text: user.email);
+    final passCtrl     = TextEditingController();
+    final telegramCtrl = TextEditingController(text: user.telegram ?? '');
+
+    showDialog(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: const Text('Editar usuário',
+            style: TextStyle(fontSize: 15, color: FenixColors.textPrimary)),
+        content: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: emailCtrl,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              decoration: const InputDecoration(
+                labelText: 'E-mail',
+                labelStyle: TextStyle(color: FenixColors.textMuted),
+                prefixIcon: Icon(Icons.mail_outline, size: 16, color: FenixColors.textMuted),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: telegramCtrl,
+              keyboardType: TextInputType.number,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              decoration: const InputDecoration(
+                labelText: 'Telegram Chat ID',
+                labelStyle: TextStyle(color: FenixColors.textMuted),
+                prefixIcon: Icon(Icons.telegram, size: 16, color: Color(0xFF0088CC)),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: passCtrl,
+              obscureText: true,
+              style: const TextStyle(fontSize: 13, color: FenixColors.textPrimary),
+              decoration: const InputDecoration(
+                labelText: 'Nova senha (opcional)',
+                labelStyle: TextStyle(color: FenixColors.textMuted),
+                prefixIcon: Icon(Icons.lock_outline, size: 16, color: FenixColors.textMuted),
+              ),
+            ),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar', style: TextStyle(color: FenixColors.textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: FenixColors.yellow,
+                foregroundColor: const Color(0xFF1A0A00)),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final headers = await _authHeader();
+              final body = <String, dynamic>{
+                'email': emailCtrl.text.trim(),
+                'telegram_chat_id': telegramCtrl.text.trim().isEmpty
+                    ? null : telegramCtrl.text.trim(),
+              };
+              if (passCtrl.text.isNotEmpty) body['new_password'] = passCtrl.text;
+              final r = await http.patch(
+                Uri.parse('$_adminBase/users/${user.id}'),
+                headers: headers,
+                body: jsonEncode(body),
+              );
+              if (!ctx.mounted) return;
+              final ok = r.statusCode == 200;
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                content: Text(ok ? 'Usuário atualizado!' : 'Erro ao editar.'),
+                backgroundColor: ok ? FenixColors.green : FenixColors.red,
+              ));
+              if (ok) ProviderScope.containerOf(ctx).read(_usersRefreshProvider.notifier).state++;
+            },
+            child: const Text('Salvar', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _confirmDelete(BuildContext ctx, _AdminUser user) {
+    showDialog(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: const Text('Excluir cadastro',
+            style: TextStyle(fontSize: 15, color: FenixColors.red)),
+        content: Text('Excluir permanentemente ${user.email}?',
+            style: const TextStyle(fontSize: 13, color: FenixColors.textSecondary)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar', style: TextStyle(color: FenixColors.textMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: FenixColors.red, foregroundColor: Colors.white),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              final headers = await _authHeader();
+              final r = await http.delete(
+                Uri.parse('$_adminBase/users/${user.id}'),
+                headers: headers,
+              );
+              if (!ctx.mounted) return;
+              final ok = r.statusCode == 200;
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                content: Text(ok ? 'Usuário excluído!' : 'Erro ao excluir.'),
+                backgroundColor: ok ? FenixColors.green : FenixColors.red,
+              ));
+              if (ok) {
+                ProviderScope.containerOf(ctx).read(_usersRefreshProvider.notifier).state++;
+                ProviderScope.containerOf(ctx).refresh(_metricsProvider);
+              }
+            },
+            child: const Text('Excluir', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+
   (Color, String) _statusStyle(String status) => switch (status) {
     'active'   => (FenixColors.green,  'ativo'),
     'exempt'   => (FenixColors.orange, 'isento'),
     'expired'  => (FenixColors.red,    'expirado'),
-    'lifetime' => (FenixColors.violet, 'lifetime'),
+    'lifetime' => (FenixColors.violet, 'vitalício'),
     'pending'  => (FenixColors.textMuted, 'pendente'),
+    'revoked'  => (FenixColors.red,    'revogado'),
     _          => (FenixColors.textMuted, status),
+  };
+
+  Color _planColor(String plan) => switch (plan) {
+    'premium' => FenixColors.yellow,
+    'pro'     => FenixColors.purple,
+    'basic'   => FenixColors.blue,
+    'exempt'  => FenixColors.green,
+    _         => FenixColors.textMuted,
+  };
+
+  String _planLabel(String plan) => switch (plan) {
+    'premium' => 'Premium',
+    'pro'     => 'Pro',
+    'basic'   => 'Basic',
+    'exempt'  => 'Isento',
+    _         => plan,
   };
 }
 
