@@ -357,27 +357,313 @@ class _BybitService {
   }
 }
 
+
+// ── Serviço OKX ───────────────────────────────────────────────────────────────
+
+class _OkxService {
+  static const _mainnet    = 'https://www.okx.com';
+  static const _testnetUrl = 'https://www.okx.com'; // OKX usa header para demo
+
+  String? apiKey, secret, passphrase;
+  bool testnet = false, configured = false;
+
+  Future<void> load() async {
+    apiKey      = await _kStorage.read(key: 'fenix_okx_api_key');
+    secret      = await _kStorage.read(key: 'fenix_okx_secret');
+    passphrase  = await _kStorage.read(key: 'fenix_okx_passphrase');
+    testnet     = (await _kStorage.read(key: 'fenix_okx_testnet')) == 'true';
+    configured  = (apiKey?.isNotEmpty == true) && (secret?.isNotEmpty == true) && (passphrase?.isNotEmpty == true);
+  }
+
+  Map<String, String> _headers(String ts, String path, {String body = ''}) {
+    final prehash = ts + 'GET' + path + body;
+    final sign    = base64.encode(
+      Hmac(sha256, utf8.encode(secret!)).convert(utf8.encode(prehash)).bytes);
+    return {
+      'OK-ACCESS-KEY':        apiKey!,
+      'OK-ACCESS-SIGN':       sign,
+      'OK-ACCESS-TIMESTAMP':  ts,
+      'OK-ACCESS-PASSPHRASE': passphrase!,
+      'Content-Type':         'application/json',
+      'User-Agent':           'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
+      if (testnet) 'x-simulated-trading': '1',
+    };
+  }
+
+  String _ts() {
+    final now = DateTime.now().toUtc();
+    final ms  = now.millisecond.toString().padLeft(3, '0');
+    final y   = now.year.toString();
+    final mo  = now.month.toString().padLeft(2, '0');
+    final d   = now.day.toString().padLeft(2, '0');
+    final h   = now.hour.toString().padLeft(2, '0');
+    final mi  = now.minute.toString().padLeft(2, '0');
+    final s   = now.second.toString().padLeft(2, '0');
+    return y + '-' + mo + '-' + d + 'T' + h + ':' + mi + ':' + s + '.' + ms + 'Z';
+  }
+
+  Future<List<ExchangeBalance>> fetchBalances() async {
+    final ts   = _ts();
+    final path = '/api/v5/account/balance';
+    final r    = await http.get(
+      Uri.parse('https://www.okx.com' + path),
+      headers: _headers(ts, path),
+    ).timeout(const Duration(seconds: 10));
+    final body = jsonDecode(r.body);
+    if (body['code'] != '0') {
+      final code = body['code']?.toString() ?? '?';
+      final msg  = body['msg']?.toString()  ?? '?';
+      throw Exception('OKX erro $code: $msg');
+    }
+    final List details = body['data']?[0]?['details'] ?? [];
+    return details
+        .map((d) => ExchangeBalance(
+              exchange: 'OKX',
+              asset:    d['ccy'],
+              free:     double.tryParse(d['availBal'].toString()) ?? 0,
+              locked:   double.tryParse(d['frozenBal'].toString()) ?? 0,
+            ))
+        .where((b) => b.total > 0.000001)
+        .toList();
+  }
+
+  Future<Map<String, double>> fetchPrices(List<String> symbols) async {
+    final prices = <String, double>{};
+    for (final sym in symbols.take(10)) {
+      try {
+        final instId = sym.replaceAll('USDT', '-USDT');
+        final r = await http.get(Uri.parse(
+          'https://www.okx.com/api/v5/market/ticker?instId=$instId'),
+        ).timeout(const Duration(seconds: 5));
+        final body = jsonDecode(r.body);
+        if (body['code'] == '0' && body['data'].isNotEmpty) {
+          prices[sym] = double.tryParse(body['data'][0]['last'].toString()) ?? 0;
+        }
+      } catch (_) {}
+    }
+    return prices;
+  }
+
+  Future<List<ExchangeOrder>> fetchOrders(List<String> symbols) async {
+    final all = <ExchangeOrder>[];
+    for (final sym in symbols.take(5)) {
+      try {
+        final ts     = _ts();
+        final instId = sym.replaceAll('USDT', '-USDT');
+        final path   = '/api/v5/trade/orders-history?instType=SPOT&instId=$instId&limit=20';
+        final r      = await http.get(
+          Uri.parse('https://www.okx.com$path'),
+          headers: _headers(ts, path),
+        ).timeout(const Duration(seconds: 10));
+        final body = jsonDecode(r.body);
+        if (body['code'] != '0') continue;
+        final List orders = body['data'] ?? [];
+        all.addAll(orders
+            .where((o) => o['state'] == 'filled')
+            .map((o) => ExchangeOrder(
+                  exchange:    'OKX',
+                  symbol:      sym,
+                  side:        o['side'].toString().toUpperCase(),
+                  price:       double.tryParse(o['avgPx'].toString()) ?? 0,
+                  executedQty: double.tryParse(o['fillSz'].toString()) ?? 0,
+                  time: DateTime.fromMillisecondsSinceEpoch(
+                      int.tryParse(o['uTime'].toString()) ?? 0),
+                )));
+      } catch (_) {}
+    }
+    return all;
+  }
+
+  Future<ExchangeSnapshot> fetchSnapshot() async {
+    await load();
+    if (!configured) {
+      return ExchangeSnapshot(name: 'OKX', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: null, configured: false, isTestnet: false);
+    }
+    try {
+      final balances = await fetchBalances();
+      const fiat = {'EUR', 'GBP', 'BRL'};
+      final nonUsdt = balances.where((b) => b.asset != 'USDT' && !fiat.contains(b.asset)).toList();
+      final usdtBal = balances.where((b) => b.asset == 'USDT').fold(0.0, (s, b) => s + b.total);
+      final symbols = nonUsdt.map((b) => '\${b.asset}USDT').toList();
+      final prices  = await fetchPrices(symbols);
+      double total  = usdtBal;
+      for (final b in nonUsdt) total += b.total * (prices['\${b.asset}USDT'] ?? 0);
+      final orders = await fetchOrders(symbols);
+      return ExchangeSnapshot(name: 'OKX', balances: balances, totalUsdt: total,
+        orders: orders, prices: prices, error: null, configured: true, isTestnet: testnet);
+    } catch (e) {
+      return ExchangeSnapshot(name: 'OKX', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: e.toString(), configured: true, isTestnet: testnet);
+    }
+  }
+}
+
+// ── Serviço Crypto.com ────────────────────────────────────────────────────────
+
+class _CryptoComService {
+  static const _mainnet = 'https://api.crypto.com/exchange/v1';
+
+  String? apiKey, secret;
+  bool testnet = false, configured = false;
+
+  Future<void> load() async {
+    apiKey     = await _kStorage.read(key: 'fenix_cryptocom_api_key');
+    secret     = await _kStorage.read(key: 'fenix_cryptocom_secret');
+    testnet    = (await _kStorage.read(key: 'fenix_cryptocom_testnet')) == 'true';
+    configured = (apiKey?.isNotEmpty == true) && (secret?.isNotEmpty == true);
+  }
+
+  String get _base => testnet
+      ? 'https://uat-api.3ona.co/exchange/v1'
+      : _mainnet;
+
+  Map<String, dynamic> _signedBody(String method, Map<String, dynamic> params) {
+    final nonce = DateTime.now().millisecondsSinceEpoch.toString();
+    final id    = int.parse(nonce.substring(0, 13));
+    // Crypto.com: sig = method + nonce + apiKey (sem params para requests simples)
+    final sigPayload = '\$method\$nonce\${apiKey!}';
+    final sig = Hmac(sha256, utf8.encode(secret!))
+        .convert(utf8.encode(sigPayload)).toString();
+    return {
+      'id':      id,
+      'method':  method,
+      'api_key': apiKey!,
+      'params':  params,
+      'nonce':   nonce,
+      'sig':     sig,
+    };
+  }
+
+  Future<List<ExchangeBalance>> fetchBalances() async {
+    const method = 'private/get-account-summary';
+    final body = _signedBody(method, {});
+    final r = await http.post(
+      Uri.parse('\$_base/\$method'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(body),
+    ).timeout(const Duration(seconds: 10));
+    final data = jsonDecode(r.body);
+    if (data['code'] != 0) throw Exception('Crypto.com code:\${data["code"]} msg:\${data["message"]} body:\${r.body.length > 200 ? r.body.substring(0,200) : r.body}');
+    final List accounts = data['result']?['accounts'] ?? [];
+    final balances = <ExchangeBalance>[];
+    for (final acc in accounts) {
+      final asset = acc['currency']?.toString() ?? '';
+      if (asset.isEmpty) continue;
+      balances.add(ExchangeBalance(
+        exchange: 'Crypto.com',
+        asset:    asset,
+        free:     double.tryParse(acc['available'].toString()) ?? 0,
+        locked:   double.tryParse(acc['order'].toString()) ?? 0,
+      ));
+    }
+    return balances.where((b) => b.total > 0.000001).toList();
+  }
+
+  Future<Map<String, double>> fetchPrices(List<String> symbols) async {
+    final prices = <String, double>{};
+    for (final sym in symbols.take(10)) {
+      try {
+        final instId = sym.replaceAll('USDT', '_USDT');
+        final r = await http.get(Uri.parse(
+          'https://api.crypto.com/exchange/v1/public/get-tickers?instrument_name=\$instId'),
+        ).timeout(const Duration(seconds: 5));
+        final body = jsonDecode(r.body);
+        if (body['code'] == 0 && body['result']?['data'] != null) {
+          final List data = body['result']['data'];
+          if (data.isNotEmpty) {
+            prices[sym] = double.tryParse(data[0]['a'].toString()) ?? 0;
+          }
+        }
+      } catch (_) {}
+    }
+    return prices;
+  }
+
+  Future<List<ExchangeOrder>> fetchOrders(List<String> symbols) async {
+    final all = <ExchangeOrder>[];
+    for (final sym in symbols.take(5)) {
+      try {
+        final instId = sym.replaceAll('USDT', '_USDT');
+        final body = _signedBody('private/get-order-history', {'instrument_name': instId, 'page_size': 20});
+        final r = await http.post(
+          Uri.parse('\$_base/private/get-order-history'),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        ).timeout(const Duration(seconds: 10));
+        final data = jsonDecode(r.body);
+        if (data['code'] != 0) continue;
+        final List orders = data['result']?['data'] ?? [];
+        all.addAll(orders
+            .where((o) => o['status'] == 'FILLED')
+            .map((o) => ExchangeOrder(
+                  exchange:    'Crypto.com',
+                  symbol:      sym,
+                  side:        o['side'].toString().toUpperCase(),
+                  price:       double.tryParse(o['avg_price'].toString()) ?? 0,
+                  executedQty: double.tryParse(o['cumulative_quantity'].toString()) ?? 0,
+                  time: DateTime.fromMillisecondsSinceEpoch(
+                      int.tryParse(o['update_time'].toString()) ?? 0),
+                )));
+      } catch (_) {}
+    }
+    return all;
+  }
+
+  Future<ExchangeSnapshot> fetchSnapshot() async {
+    await load();
+    if (!configured) {
+      return ExchangeSnapshot(name: 'Crypto.com', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: null, configured: false, isTestnet: false);
+    }
+    try {
+      final balances = await fetchBalances();
+      const fiat = {'EUR', 'GBP', 'BRL'};
+      final nonUsdt = balances.where((b) => b.asset != 'USDT' && !fiat.contains(b.asset)).toList();
+      final usdtBal = balances.where((b) => b.asset == 'USDT').fold(0.0, (s, b) => s + b.total);
+      final symbols = nonUsdt.map((b) => '\${b.asset}USDT').toList();
+      final prices  = await fetchPrices(symbols);
+      double total  = usdtBal;
+      for (final b in nonUsdt) total += b.total * (prices['\${b.asset}USDT'] ?? 0);
+      final orders = await fetchOrders(symbols);
+      return ExchangeSnapshot(name: 'Crypto.com', balances: balances, totalUsdt: total,
+        orders: orders, prices: prices, error: null, configured: true, isTestnet: testnet);
+    } catch (e) {
+      return ExchangeSnapshot(name: 'Crypto.com', balances: [], totalUsdt: 0,
+        orders: [], prices: {}, error: e.toString(), configured: true, isTestnet: testnet);
+    }
+  }
+}
+
 // ── Serviço Unificado ─────────────────────────────────────────────────────────
 
 class ExchangeService {
-  final _binance = _BinanceService();
-  final _bybit   = _BybitService();
+  final _binance   = _BinanceService();
+  final _bybit     = _BybitService();
+  final _okx       = _OkxService();
+  final _cryptocom = _CryptoComService();
 
   Future<ExchangeDashboardData> fetchAll() async {
-    // Busca as duas exchanges em paralelo
+    // Busca todas as exchanges em paralelo
     final results = await Future.wait([
       _binance.fetchSnapshot(),
       _bybit.fetchSnapshot(),
+      _okx.fetchSnapshot(),
+      _cryptocom.fetchSnapshot(),
     ]);
 
-    final binanceSnap = results[0];
-    final bybitSnap   = results[1];
+    final binanceSnap   = results[0];
+    final bybitSnap     = results[1];
+    final okxSnap       = results[2];
+    final cryptocomSnap = results[3];
 
     final snapshots = <String, ExchangeSnapshot>{};
-    if (binanceSnap.configured) snapshots['Binance'] = binanceSnap;
-    if (bybitSnap.configured)   snapshots['Bybit']   = bybitSnap;
+    if (binanceSnap.configured)   snapshots['Binance']    = binanceSnap;
+    if (bybitSnap.configured)     snapshots['Bybit']      = bybitSnap;
+    if (okxSnap.configured)       snapshots['OKX']        = okxSnap;
+    if (cryptocomSnap.configured) snapshots['Crypto.com'] = cryptocomSnap;
 
-    if (!binanceSnap.configured && !bybitSnap.configured) {
+    if (snapshots.isEmpty) {
       return ExchangeDashboardData(
         balances: [], totalUsdtValue: 0, recentOrders: [],
         prices: {}, realizedPnlHoje: 0, ciclosFechadosHoje: 0,
@@ -391,26 +677,37 @@ class ExchangeService {
     final allBalances = <ExchangeBalance>[
       ...binanceSnap.balances,
       ...bybitSnap.balances,
+      ...okxSnap.balances,
+      ...cryptocomSnap.balances,
     ];
     final allOrders = <ExchangeOrder>[
       ...binanceSnap.orders,
       ...bybitSnap.orders,
+      ...okxSnap.orders,
+      ...cryptocomSnap.orders,
     ]..sort((a, b) => b.time.compareTo(a.time));
 
     final allPrices = <String, double>{
       ...binanceSnap.prices,
       ...bybitSnap.prices,
+      ...okxSnap.prices,
+      ...cryptocomSnap.prices,
     };
 
-    final totalUsdt = binanceSnap.totalUsdt + bybitSnap.totalUsdt;
+    final totalUsdt = binanceSnap.totalUsdt + bybitSnap.totalUsdt +
+                      okxSnap.totalUsdt + cryptocomSnap.totalUsdt;
 
     final errors = <String, String?>{};
-    if (binanceSnap.error != null) errors['Binance'] = binanceSnap.error;
-    if (bybitSnap.error != null)   errors['Bybit']   = bybitSnap.error;
+    if (binanceSnap.error != null)   errors['Binance']    = binanceSnap.error;
+    if (bybitSnap.error != null)     errors['Bybit']      = bybitSnap.error;
+    if (okxSnap.error != null)       errors['OKX']        = okxSnap.error;
+    if (cryptocomSnap.error != null) errors['Crypto.com'] = cryptocomSnap.error;
 
     final active = <String>[
-      if (binanceSnap.configured && binanceSnap.error == null) 'Binance',
-      if (bybitSnap.configured   && bybitSnap.error == null)   'Bybit',
+      if (binanceSnap.configured   && binanceSnap.error == null)   'Binance',
+      if (bybitSnap.configured     && bybitSnap.error == null)     'Bybit',
+      if (okxSnap.configured       && okxSnap.error == null)       'OKX',
+      if (cryptocomSnap.configured && cryptocomSnap.error == null) 'Crypto.com',
     ];
 
     // P&L do dia

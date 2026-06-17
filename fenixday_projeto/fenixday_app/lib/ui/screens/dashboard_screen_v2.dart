@@ -117,6 +117,20 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
   }
 
   @override
+
+  void _updateTabController(int count) {
+    if (count != _tabController.length) {
+      final oldIndex = _tabController.index;
+      _tabController.dispose();
+      _tabController = TabController(
+        length: count,
+        vsync: this,
+        initialIndex: oldIndex.clamp(0, count - 1),
+      );
+      setState(() {});
+    }
+  }
+
   void dispose() {
     _tabController.dispose();
     super.dispose();
@@ -247,6 +261,9 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
               ),
               data: (data) {
                 final availableTabs = ['Total', ...data.activeExchanges];
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  _updateTabController(availableTabs.length);
+                });
                 return TabBarView(
                   controller: _tabController,
                   children: availableTabs.map((tab) {

@@ -310,7 +310,9 @@ Future<bool> _testBybit(String apiKey, String secret, bool testnet) async {
 }
 
 Future<bool> _testOkx(String apiKey, String secret, bool demo, String passphrase) async {
-  final ts  = DateTime.now().toUtc().toIso8601String();
+  final now = DateTime.now().toUtc();
+  final ms  = now.millisecond.toString().padLeft(3, '0');
+  final ts  = now.year.toString() + '-' + now.month.toString().padLeft(2, '0') + '-' + now.day.toString().padLeft(2, '0') + 'T' + now.hour.toString().padLeft(2, '0') + ':' + now.minute.toString().padLeft(2, '0') + ':' + now.second.toString().padLeft(2, '0') + '.' + ms + 'Z';
   final msg = '${ts}GET/api/v5/account/balance';
   final sig = base64.encode(
     Hmac(sha256, utf8.encode(secret)).convert(utf8.encode(msg)).bytes,
@@ -321,6 +323,8 @@ Future<bool> _testOkx(String apiKey, String secret, bool demo, String passphrase
       headers: {
         'OK-ACCESS-KEY': apiKey, 'OK-ACCESS-SIGN': sig,
         'OK-ACCESS-TIMESTAMP': ts, 'OK-ACCESS-PASSPHRASE': passphrase,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36',
         if (demo) 'x-simulated-trading': '1',
       },
     ).timeout(const Duration(seconds: 8));
