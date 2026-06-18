@@ -4,8 +4,10 @@
 /// • Saldo separado por corretora
 
 import 'dart:convert';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -98,6 +100,45 @@ class _ModoRealNotifier extends StateNotifier<bool> {
 
 // ── Tela ──────────────────────────────────────────────────────────────────────
 
+
+// ── Provider resumo grids ─────────────────────────────────────────────────────
+class _GridSummary {
+  final double totalCapital, totalLucro;
+  final int totalCiclos, gridsAtivos;
+  final List<Map<String, dynamic>> grids;
+  const _GridSummary({required this.totalCapital, required this.totalLucro,
+      required this.totalCiclos, required this.gridsAtivos, required this.grids});
+  static _GridSummary empty() => const _GridSummary(
+      totalCapital:0, totalLucro:0, totalCiclos:0, gridsAtivos:0, grids:[]);
+}
+class _GridSummaryNotifier extends StateNotifier<AsyncValue<_GridSummary>> {
+  _GridSummaryNotifier() : super(const AsyncValue.loading()) { fetch(); }
+  Future<void> fetch() async {
+    state = const AsyncValue.loading();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('access_token') ?? '';
+      final r = await http.get(
+        Uri.parse('https://fenixday.info/api/v1/grids/summary'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 10));
+      if (r.statusCode == 200) {
+        final d = jsonDecode(r.body);
+        state = AsyncValue.data(_GridSummary(
+          totalCapital: (d['total_capital'] as num).toDouble(),
+          totalLucro:   (d['total_lucro']   as num).toDouble(),
+          totalCiclos:  d['total_ciclos']  as int,
+          gridsAtivos:  d['grids_ativos']  as int,
+          grids: List<Map<String,dynamic>>.from(d['grids'] ?? []),
+        ));
+      } else { state = AsyncValue.data(_GridSummary.empty()); }
+    } catch (e,st) { state = AsyncValue.error(e,st); }
+  }
+}
+final _gridSummaryProvider =
+    StateNotifierProvider<_GridSummaryNotifier, AsyncValue<_GridSummary>>(
+  (ref) => _GridSummaryNotifier());
+
 class DashboardScreenV2 extends ConsumerStatefulWidget {
   const DashboardScreenV2({super.key});
 
@@ -149,6 +190,7 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
         child: RefreshIndicator(
           onRefresh: () async {
             ref.read(_exchangeProvider.notifier).fetch();
+            ref.read(_gridSummaryProvider.notifier).fetch();
             ref.read(_userProvider.notifier).load();
           },
           color: FenixColors.yellow,
@@ -206,8 +248,10 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
                         data: (data) {
                           // Monta as abas disponíveis
                           final availableTabs = ['Total'];
-                          for (final ex in data.activeExchanges) {
-                            availableTabs.add(ex);
+                          if (modoReal) {
+                            for (final ex in data.activeExchanges) {
+                              availableTabs.add(ex);
+                            }
                           }
 
                           return Column(
@@ -260,7 +304,9 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
                 onRetry: () => ref.read(_exchangeProvider.notifier).fetch(),
               ),
               data: (data) {
-                final availableTabs = ['Total', ...data.activeExchanges];
+                final availableTabs = modoReal
+                    ? ['Total', ...data.activeExchanges]
+                    : ['Total'];
                 WidgetsBinding.instance.addPostFrameCallback((_) {
                   _updateTabController(availableTabs.length);
                 });
@@ -369,7 +415,7 @@ class _ExchangeTab extends StatelessWidget {
 
 // ── Conteúdo de cada aba ──────────────────────────────────────────────────────
 
-class _TabContent extends StatelessWidget {
+class _TabContent extends ConsumerWidget {
   final ExchangeDashboardData data;
   final String? exchangeFilter; // null = Total
   final bool modoReal;
@@ -399,202 +445,218 @@ class _TabContent extends StatelessWidget {
       : data.snapshots[exchangeFilter]?.prices ?? {};
 
   @override
-  Widget build(BuildContext context) {
-    final fmt     = NumberFormat('#,##0.00', 'pt_BR');
+  Widget build(BuildContext context, WidgetRef ref) {
+    final fmt              = NumberFormat('#,##0.00', 'pt_BR');
+    final gridSummaryAsync = ref.watch(_gridSummaryProvider);
     final usdtBal = _balances
         .where((b) => b.asset == 'USDT')
         .fold(0.0, (s, b) => s + b.total);
     final assetsVal = _totalUsdt - usdtBal;
-
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
-      children: [
-        // Modo real/demo banner
-        if (!modoReal) ...[
-          Container(
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: FenixColors.orangeBg,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                  color: FenixColors.orange.withOpacity(.3), width: .5),
-            ),
-            child: const Row(children: [
-              Icon(Icons.science_outlined, size: 14, color: FenixColors.orange),
-              SizedBox(width: 8),
-              Text('MODO DEMO ativo — dados simulados, sem ordens reais',
-                  style: TextStyle(fontSize: 11, color: FenixColors.orange)),
-            ]),
-          ),
-          const SizedBox(height: 12),
-        ],
-
-        // Erros parciais
-        for (final entry in data.errors.entries)
-          if (entry.value != null && (exchangeFilter == null || entry.key == exchangeFilter))
+    return RefreshIndicator(
+      onRefresh: () async {
+        ref.read(_exchangeProvider.notifier).fetch();
+        ref.read(_gridSummaryProvider.notifier).fetch();
+        ref.read(_userProvider.notifier).load();
+      },
+      color: const Color(0xFFF7931A),
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
+        children: [
+          if (!modoReal) ...[
             Container(
-              margin: const EdgeInsets.only(bottom: 8),
               padding: const EdgeInsets.all(10),
+              margin: const EdgeInsets.only(bottom: 12),
               decoration: BoxDecoration(
-                color: FenixColors.redBg,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(
-                    color: FenixColors.red.withOpacity(.3), width: .5),
-              ),
-              child: Row(children: [
-                const Icon(Icons.warning_amber_outlined,
-                    size: 13, color: FenixColors.red),
-                const SizedBox(width: 8),
-                Expanded(child: Text('${entry.key}: ${entry.value}',
-                    style: const TextStyle(
-                        fontSize: 10, color: FenixColors.red))),
-              ]),
-            ),
-
-        // ── Patrimônio ───────────────────────────────────────────────
-        _SectionTitle('Patrimônio total em operação'),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: _cardDeco(topColor: FenixColors.yellow),
-          child: Column(children: [
-            Row(children: [
-              Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    exchangeFilter != null
-                        ? 'Patrimônio ($exchangeFilter)'
-                        : 'Patrimônio total (${data.activeExchanges.join(' + ')})',
-                    style: const TextStyle(fontSize: 10,
-                        color: FenixColors.textMuted),
-                  ),
-                  const SizedBox(height: 3),
-                  Text('\$${fmt.format(_totalUsdt)}',
-                      style: const TextStyle(fontFamily: 'RobotoMono',
-                          fontSize: 24, fontWeight: FontWeight.w500,
-                          color: FenixColors.yellow)),
-                ],
-              )),
-              const Icon(Icons.account_balance_wallet_outlined,
-                  size: 28, color: FenixColors.yellow),
-            ]),
-            const SizedBox(height: 12),
-            const Divider(height: 1, thickness: .5, color: FenixColors.border),
-            const SizedBox(height: 10),
-            Row(children: [
-              Expanded(child: _Item(
-                label: 'USDT disponível',
-                value: '\$${fmt.format(usdtBal)}',
-                icon: Icons.attach_money,
-                color: FenixColors.green,
-                sub: 'saldo livre',
-              )),
-              Container(width: .5, height: 40, color: FenixColors.border),
-              Expanded(child: _Item(
-                label: 'Em ativos',
-                value: '\$${fmt.format(assetsVal)}',
-                icon: Icons.currency_bitcoin,
-                color: FenixColors.yellow,
-                sub: 'valor atual',
-              )),
-              Container(width: .5, height: 40, color: FenixColors.border),
-              Expanded(child: _Item(
-                label: 'P&L hoje',
-                value: '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
-                icon: data.realizedPnlHoje >= 0
-                    ? Icons.trending_up
-                    : Icons.trending_down,
-                color: data.realizedPnlHoje >= 0
-                    ? FenixColors.green
-                    : FenixColors.red,
-                sub: '${data.ciclosFechadosHoje} ciclos',
-              )),
-            ]),
-          ]),
-        ),
-        const SizedBox(height: 14),
-
-        // ── P&L hoje ─────────────────────────────────────────────────
-        _SectionTitle('Lucro de grid — ciclos fechados hoje'),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: _cardDeco(
-            topColor: data.realizedPnlHoje >= 0
-                ? FenixColors.green
-                : FenixColors.red,
-          ),
-          child: Row(children: [
-            Expanded(child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
-                  style: TextStyle(fontFamily: 'RobotoMono', fontSize: 22,
-                      fontWeight: FontWeight.w500,
-                      color: data.realizedPnlHoje >= 0
-                          ? FenixColors.green
-                          : FenixColors.red),
-                ),
-                const SizedBox(height: 4),
-                Text('${data.ciclosFechadosHoje} ciclos fechados hoje',
-                    style: const TextStyle(fontSize: 11,
-                        color: FenixColors.textMuted)),
-              ],
-            )),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(
-                color: (data.realizedPnlHoje >= 0
-                    ? FenixColors.green
-                    : FenixColors.red).withOpacity(.1),
+                color: FenixColors.orangeBg,
                 borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: FenixColors.orange.withOpacity(.3), width: .5),
               ),
-              child: Column(children: [
-                Icon(
-                  data.realizedPnlHoje >= 0
-                      ? Icons.trending_up
-                      : Icons.trending_down,
-                  color: data.realizedPnlHoje >= 0
-                      ? FenixColors.green
-                      : FenixColors.red,
-                  size: 24,
-                ),
-                const SizedBox(height: 4),
-                Text(data.realizedPnlHoje >= 0 ? 'LUCRO' : 'PERDA',
-                    style: TextStyle(fontFamily: 'RobotoMono',
-                        fontSize: 9, fontWeight: FontWeight.w700,
-                        color: data.realizedPnlHoje >= 0
-                            ? FenixColors.green
-                            : FenixColors.red)),
+              child: const Row(children: [
+                Icon(Icons.science_outlined, size: 14, color: FenixColors.orange),
+                SizedBox(width: 8),
+                Expanded(child: Text('MODO DEMO — resultados simulados dos grids',
+                    style: TextStyle(fontSize: 11, color: FenixColors.orange))),
               ]),
             ),
-          ]),
-        ),
-        const SizedBox(height: 14),
-
-        // ── Saldos ───────────────────────────────────────────────────
-        _SectionTitle('Saldos por ativo'),
-        const SizedBox(height: 6),
-        _BalancesCard(balances: _balances, prices: _prices,
-            totalUsdt: _totalUsdt),
-        const SizedBox(height: 14),
-
-        // ── Ordens recentes ───────────────────────────────────────────
-        _SectionTitle('Ordens recentes'),
-        const SizedBox(height: 6),
-        _OrdensCard(orders: _orders),
-        const SizedBox(height: 8),
-
-        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-          const Icon(Icons.update, size: 11, color: FenixColors.textMuted),
-          const SizedBox(width: 4),
-          Text('Atualizado: ${DateFormat('HH:mm:ss').format(data.fetchedAt)}',
-              style: const TextStyle(fontFamily: 'RobotoMono',
-                  fontSize: 9, color: FenixColors.textMuted)),
-        ]),
-      ],
+            gridSummaryAsync.when(
+              loading: () => const Center(child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: CircularProgressIndicator(color: FenixColors.yellow, strokeWidth: 2))),
+              error: (_, __) => const SizedBox.shrink(),
+              data: (gs) => gs.gridsAtivos == 0
+                  ? const SizedBox.shrink()
+                  : Column(children: [
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 8),
+                        decoration: BoxDecoration(
+                          color: FenixColors.card,
+                          borderRadius: BorderRadius.circular(10),
+                          border: const Border(
+                            top: BorderSide(color: FenixColors.orange, width: 2),
+                            left: BorderSide(color: FenixColors.border, width: .5),
+                            right: BorderSide(color: FenixColors.border, width: .5),
+                            bottom: BorderSide(color: FenixColors.border, width: .5)),
+                        ),
+                        child: Row(children: [
+                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            const Text('Simulação — Grids ativos', style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                            const SizedBox(height: 4),
+                            Text('\$${fmt.format(gs.totalCapital)}', style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 22, fontWeight: FontWeight.w500, color: FenixColors.yellow)),
+                            Text('capital em ${gs.gridsAtivos} grids', style: const TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                          ])),
+                          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                            Text('+\$${fmt.format(gs.totalLucro)}', style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 18, fontWeight: FontWeight.w600, color: FenixColors.green)),
+                            Text('${gs.totalCiclos} ciclos', style: const TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                          ]),
+                        ]),
+                      ),
+                      ...gs.grids.map((g) {
+                        final sym    = (g['symbol'] as String).replaceAll('USDT', '/USDT');
+                        final cap    = (g['capital'] as num).toDouble();
+                        final lucro  = (g['lucro_realizado'] as num).toDouble();
+                        final ciclos = g['ciclos_fechados'] as int;
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 8),
+                          decoration: BoxDecoration(color: FenixColors.card,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: FenixColors.border, width: .5)),
+                          child: Row(children: [
+                            Container(width: 32, height: 32,
+                                decoration: BoxDecoration(color: FenixColors.yellowBg,
+                                    borderRadius: BorderRadius.circular(6)),
+                                child: Center(child: Text(sym.substring(0, 1),
+                                    style: const TextStyle(fontWeight: FontWeight.w700, color: FenixColors.yellow)))),
+                            const SizedBox(width: 10),
+                            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Text(sym, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+                              Text('\$${fmt.format(cap)} capital', style: const TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                            ])),
+                            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                              Text('+\$${fmt.format(lucro)}', style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 13, fontWeight: FontWeight.w600, color: FenixColors.green)),
+                              Text('$ciclos ciclos', style: const TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                            ]),
+                          ]),
+                        );
+                      }).toList(),
+                    ]),
+            ),
+          ],
+          if (modoReal) ...[
+            for (final entry in data.errors.entries)
+              if (entry.value != null && (exchangeFilter == null || entry.key == exchangeFilter))
+                Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: FenixColors.redBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: FenixColors.red.withOpacity(.3), width: .5),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.warning_amber_outlined, size: 13, color: FenixColors.red),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text('${entry.key}: ${entry.value}',
+                        style: const TextStyle(fontSize: 10, color: FenixColors.red))),
+                  ]),
+                ),
+            _SectionTitle('Patrimônio total em operação'),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: _cardDeco(topColor: FenixColors.yellow),
+              child: Column(children: [
+                Row(children: [
+                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(
+                      exchangeFilter != null
+                          ? 'Patrimônio ($exchangeFilter)'
+                          : 'Patrimônio total (${data.activeExchanges.join(' + ')})',
+                      style: const TextStyle(fontSize: 10, color: FenixColors.textMuted),
+                    ),
+                    const SizedBox(height: 3),
+                    Text('\$${fmt.format(_totalUsdt)}',
+                        style: const TextStyle(fontFamily: 'RobotoMono',
+                            fontSize: 24, fontWeight: FontWeight.w500, color: FenixColors.yellow)),
+                  ])),
+                  const Icon(Icons.account_balance_wallet_outlined, size: 28, color: FenixColors.yellow),
+                ]),
+                const SizedBox(height: 12),
+                const Divider(height: 1, thickness: .5, color: FenixColors.border),
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(child: _Item(label: 'USDT disponível', value: '\$${fmt.format(usdtBal)}',
+                      icon: Icons.attach_money, color: FenixColors.green, sub: 'saldo livre')),
+                  Container(width: .5, height: 40, color: FenixColors.border),
+                  Expanded(child: _Item(label: 'Em ativos', value: '\$${fmt.format(assetsVal)}',
+                      icon: Icons.currency_bitcoin, color: FenixColors.yellow, sub: 'valor atual')),
+                  Container(width: .5, height: 40, color: FenixColors.border),
+                  Expanded(child: _Item(
+                    label: 'P&L hoje',
+                    value: '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
+                    icon: data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
+                    color: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red,
+                    sub: '${data.ciclosFechadosHoje} ciclos',
+                  )),
+                ]),
+              ]),
+            ),
+            const SizedBox(height: 14),
+            _SectionTitle('Lucro de grid — ciclos fechados hoje'),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: _cardDeco(
+                  topColor: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red),
+              child: Row(children: [
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(
+                    '${data.realizedPnlHoje >= 0 ? '+' : ''}\$${fmt.format(data.realizedPnlHoje)}',
+                    style: TextStyle(fontFamily: 'RobotoMono', fontSize: 22,
+                        fontWeight: FontWeight.w500,
+                        color: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red),
+                  ),
+                  const SizedBox(height: 4),
+                  Text('${data.ciclosFechadosHoje} ciclos fechados hoje',
+                      style: const TextStyle(fontSize: 11, color: FenixColors.textMuted)),
+                ])),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: (data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red).withOpacity(.1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(children: [
+                    Icon(data.realizedPnlHoje >= 0 ? Icons.trending_up : Icons.trending_down,
+                        color: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red, size: 24),
+                    const SizedBox(height: 4),
+                    Text(data.realizedPnlHoje >= 0 ? 'LUCRO' : 'PERDA',
+                        style: TextStyle(fontFamily: 'RobotoMono', fontSize: 9, fontWeight: FontWeight.w700,
+                            color: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red)),
+                  ]),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 14),
+            _SectionTitle('Saldos por ativo'),
+            const SizedBox(height: 6),
+            _BalancesCard(balances: _balances, prices: _prices, totalUsdt: _totalUsdt),
+            const SizedBox(height: 14),
+            _SectionTitle('Ordens recentes'),
+            const SizedBox(height: 6),
+            _OrdensCard(orders: _orders),
+            const SizedBox(height: 8),
+            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+              const Icon(Icons.update, size: 11, color: FenixColors.textMuted),
+              const SizedBox(width: 4),
+              Text('Atualizado: ${DateFormat('HH:mm:ss').format(data.fetchedAt)}',
+                  style: const TextStyle(fontFamily: 'RobotoMono',
+                      fontSize: 9, color: FenixColors.textMuted)),
+            ]),
+          ],
+        ],
+      ),
     );
   }
 }
