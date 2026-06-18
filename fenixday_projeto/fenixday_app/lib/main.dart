@@ -20,6 +20,7 @@ import 'ui/screens/paper_trading_screen.dart';
 import 'ui/screens/license_screen_v3.dart';
 import 'ui/screens/admin_screen_v2.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
+import 'ui/screens/settings/vpn_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
 import 'ui/screens/privacy_screen.dart';
 import 'ui/screens/client_profile_screen.dart';
@@ -103,6 +104,11 @@ final _router = GoRouter(
       path: '/admin',
       name: 'admin',
       builder: (_, __) => const AdminScreenV2(),
+    ),
+    GoRoute(
+      path: '/vpn',
+      name: 'vpn',
+      builder: (_, __) => const VpnSettingsScreen(),
     ),
     GoRoute(
       path: '/apis',
@@ -306,6 +312,12 @@ class _SettingsScreen extends StatelessWidget {
               onTap: () => context.push('/minha-conta'),
             );
           }),
+          _SettingsTile(
+            icon:  Icons.vpn_lock_outlined,
+            label: 'Configurar VPN',
+            color: FenixColors.blue,
+            onTap: () => context.push('/vpn'),
+          ),
           _SettingsTile(
             icon:  Icons.lock_outline,
             label: 'Privacidade e Dados (LGPD)',
