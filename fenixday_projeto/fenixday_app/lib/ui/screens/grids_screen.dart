@@ -666,12 +666,21 @@ class _GridCard extends ConsumerWidget {
                 ),
                 icon: const Icon(Icons.stop_outlined, size: 14),
                 label: const Text('Parar', style: TextStyle(fontSize: 11)),
-                onPressed: () => _confirmStop(context, ref),
+                onPressed: () async {
+                  try {
+                    await _confirmStop(context, ref);
+                  } catch (e) {
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(e.toString()),
+                        backgroundColor: FenixColors.red));
+                    }
+                  }
+                },
               ),
             ),
           ])
         else
-          // Excluir grid parado
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
@@ -684,7 +693,31 @@ class _GridCard extends ConsumerWidget {
               ),
               icon: const Icon(Icons.delete_outline, size: 14),
               label: const Text('Remover', style: TextStyle(fontSize: 11)),
-              onPressed: () => _confirmDelete(context, ref),
+              onPressed: () async {
+                try { await _confirmDelete(context, ref); }
+                catch (e) {
+                  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(e.toString()), backgroundColor: FenixColors.red));
+                }
+              },
+            ),
+          ),
+        if (!grid.isStopped)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: FenixColors.red,
+                  side: BorderSide(color: FenixColors.red.withOpacity(.3), width: .5),
+                  padding: const EdgeInsets.symmetric(vertical: 6),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                ),
+                icon: const Icon(Icons.delete_forever_outlined, size: 14),
+                label: const Text('Parar e Excluir', style: TextStyle(fontSize: 11)),
+                onPressed: () => _confirmStopAndDelete(context, ref),
+              ),
             ),
           ),
       ]),
@@ -694,42 +727,79 @@ class _GridCard extends ConsumerWidget {
   Future<void> _confirmStop(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         backgroundColor: FenixColors.card,
         title: Text('Parar grid ${grid.symbol}?',
             style: const TextStyle(fontSize: 14, color: FenixColors.textPrimary)),
         content: const Text('O grid será parado e todas as ordens abertas canceladas.',
             style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false),
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(false),
               child: const Text('Cancelar',
                   style: TextStyle(color: FenixColors.textMuted))),
-          TextButton(onPressed: () => Navigator.pop(context, true),
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(true),
               child: const Text('Parar',
                   style: TextStyle(color: FenixColors.red,
                       fontWeight: FontWeight.w600))),
         ],
       ),
     );
-    if (ok == true && context.mounted) {
-      await ref.read(gridsProvider.notifier).stopGrid(grid.id);
+    if (ok == true) {
+      try {
+        await ref.read(gridsProvider.notifier).stopGrid(grid.id);
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Erro ao parar: $e'),
+            backgroundColor: FenixColors.red));
+        }
+      }
+    }
+  }
+
+  Future<void> _confirmStopAndDelete(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: Text('Parar e excluir ${grid.symbol}?',
+            style: const TextStyle(fontSize: 14, color: FenixColors.textPrimary)),
+        content: const Text('O grid sera parado e removido permanentemente.',
+            style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(false),
+              child: const Text('Cancelar', style: TextStyle(color: FenixColors.textMuted))),
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(true),
+              child: const Text('Parar e Excluir',
+                  style: TextStyle(color: FenixColors.red, fontWeight: FontWeight.w600))),
+        ],
+      ),
+    );
+    if (ok == true) {
+      try {
+        await ref.read(gridsProvider.notifier).stopGrid(grid.id);
+        await ref.read(gridsProvider.notifier).deleteGrid(grid.id);
+      } catch (e) {
+        if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Erro: $e'), backgroundColor: FenixColors.red));
+      }
     }
   }
 
   Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
     final ok = await showDialog<bool>(
       context: context,
-      builder: (_) => AlertDialog(
+      builder: (dialogCtx) => AlertDialog(
         backgroundColor: FenixColors.card,
         title: const Text('Remover grid?',
             style: TextStyle(fontSize: 14, color: FenixColors.textPrimary)),
         content: const Text('O grid será removido permanentemente.',
             style: TextStyle(fontSize: 12, color: FenixColors.textMuted)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false),
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(false),
               child: const Text('Cancelar',
                   style: TextStyle(color: FenixColors.textMuted))),
-          TextButton(onPressed: () => Navigator.pop(context, true),
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(true),
               child: const Text('Remover',
                   style: TextStyle(color: FenixColors.red,
                       fontWeight: FontWeight.w600))),

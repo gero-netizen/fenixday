@@ -12,6 +12,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
 import 'dart:convert';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../theme/fenix_theme.dart';
@@ -34,7 +36,7 @@ const _kPopularPairs = [
   'MATICUSDT','LTCUSDT','UNIUSDT','ATOMUSDT','TRXUSDT',
 ];
 
-const _kExchanges = ['Binance', 'Bybit'];
+const _kExchanges = ['Binance', 'Bybit', 'OKX', 'Bitget', 'MEXC'];
 
 final _candlesProvider = FutureProvider.family<List<CandleData>, String>((ref, key) async {
   final parts    = key.split('|');
@@ -117,6 +119,12 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
       await prefs.remove('grid_init_upper');
       await prefs.remove('grid_init_lower');
       await prefs.remove('grid_init_grids');
+    }
+    // Carregar saldo real da exchange
+    final balance = prefs.getDouble('grid_init_balance');
+    if (balance != null && balance > 0) {
+      ref.read(_paramsProvider.notifier).setBalance(balance);
+      await prefs.remove('grid_init_balance');
     }
   }
 
@@ -204,9 +212,9 @@ class _PairHeader extends ConsumerWidget {
               style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 16,
                   fontWeight: FontWeight.w500, color: FenixColors.green)),
           const SizedBox(width: 6),
-          Text('${chgPct! >= 0 ? "+" : ""}${chgPct!.toStringAsFixed(2)}%',
+          Text('${(chgPct ?? 0) >= 0 ? "+" : ""}${(chgPct ?? 0).toStringAsFixed(2)}%',
               style: TextStyle(fontFamily: 'RobotoMono', fontSize: 11,
-                  color: chgPct! >= 0 ? FenixColors.green : FenixColors.red)),
+                  color: (chgPct ?? 0) >= 0 ? FenixColors.green : FenixColors.red)),
         ] else
           const SizedBox(width: 14, height: 14,
               child: CircularProgressIndicator(strokeWidth: 1.5, color: FenixColors.yellow)),
@@ -820,8 +828,9 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                       Expanded(
                         child: _PriceField(
                           value: params.lowerPrice,
-                          onMinus: () => notifier.adjustLower(-100),
-                          onPlus:  () => notifier.adjustLower(100),
+                          onMinus: () => notifier.adjustLower(-1),
+                          onPlus:  () => notifier.adjustLower(1),
+                          onEdit: (v) => notifier.setLower(v),
                         ),
                       ),
                       const Padding(
@@ -831,8 +840,9 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                       Expanded(
                         child: _PriceField(
                           value: params.upperPrice,
-                          onMinus: () => notifier.adjustUpper(-100),
-                          onPlus:  () => notifier.adjustUpper(100),
+                          onMinus: () => notifier.adjustUpper(-1),
+                          onPlus:  () => notifier.adjustUpper(1),
+                          onEdit: (v) => notifier.setUpper(v),
                         ),
                       ),
                     ]),
@@ -850,6 +860,7 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                       isInt: true,
                       onMinus: () => notifier.adjustGrids(-1),
                       onPlus:  () => notifier.adjustGrids(1),
+                      onEdit: (v) => notifier.adjustGrids(v.toInt() - params.numGrids),
                     ),
                     const SizedBox(height: 4),
                     Text(
@@ -900,19 +911,21 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                       child: Slider(
                         value: params.allocationPct,
                         onChanged: notifier.setAllocationPct,
-                        divisions: 4,
                       ),
                     ),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: ['0', '', '', '', '100%'].map((s) =>
+                      children: ['0', '25%', '50%', '75%', '100%'].map((s) =>
                           Text(s, style: const TextStyle(
                               fontSize: 9, color: FenixColors.textMuted))).toList(),
                     ),
                     const SizedBox(height: 4),
-                    const Text('Disponível 0,00 USDT',
-                        style: TextStyle(
-                            fontSize: 10, color: FenixColors.textMuted)),
+                    Consumer(builder: (ctx, ref, _) {
+                      final params = ref.watch(_paramsProvider);
+                      return Text('Disponível ${NumberFormat('#,##0.00', 'pt_BR').format(ref.read(_paramsProvider.notifier)._balanceUsdt)} USDT',
+                        style: const TextStyle(
+                            fontSize: 10, color: FenixColors.textMuted));
+                    }),
                     const SizedBox(height: 12),
 
                     // Reinvestir lucros
@@ -1243,8 +1256,8 @@ class _SummaryBar extends ConsumerWidget {
         scrollDirection: Axis.horizontal,
         child: Row(children: [
           _SumCard('Preço Atual',
-              '${fmt.format(66842.19)} USDT',
-              '≈ R\$ ${fmt.format(66842.19 * rate)}',
+              '${fmt.format(ref.watch(_candlesProvider('${ref.watch(_symbolProvider)}|${ref.watch(_tfProvider)}|${ref.watch(_exchangeProvider)}')).value?.isNotEmpty == true ? ref.watch(_candlesProvider('${ref.watch(_symbolProvider)}|${ref.watch(_tfProvider)}|${ref.watch(_exchangeProvider)}')).value!.last.close : 0)} USDT',
+              '≈ R\$ ${fmt.format((ref.watch(_candlesProvider('${ref.watch(_symbolProvider)}|${ref.watch(_tfProvider)}|${ref.watch(_exchangeProvider)}')).value?.isNotEmpty == true ? ref.watch(_candlesProvider('${ref.watch(_symbolProvider)}|${ref.watch(_tfProvider)}|${ref.watch(_exchangeProvider)}')).value!.last.close : 0) * rate)}',
               FenixColors.green),
           _divider(),
           _SumCard('Investimento Total',
@@ -1440,22 +1453,67 @@ class _FieldLabel extends StatelessWidget {
   );
 }
 
-class _PriceField extends StatelessWidget {
+class _PriceField extends StatefulWidget {
   final double value;
   final bool isInt;
   final VoidCallback onMinus, onPlus;
+  final ValueChanged<double>? onEdit;
   const _PriceField({
     required this.value,
     required this.onMinus,
     required this.onPlus,
     this.isInt = false,
+    this.onEdit,
   });
+  @override
+  State<_PriceField> createState() => _PriceFieldState();
+}
+
+class _PriceFieldState extends State<_PriceField> {
+  bool _editing = false;
+  late TextEditingController _ctrl;
+  late FocusNode _focus;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController();
+    _focus = FocusNode();
+    _focus.addListener(() {
+      if (!_focus.hasFocus && _editing) _commitEdit();
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  void _startEdit() {
+    if (widget.onEdit == null) return;
+    final raw = widget.isInt
+        ? widget.value.toInt().toString()
+        : widget.value.toStringAsFixed(widget.value >= 1 ? 4 : 6);
+    _ctrl.text = raw;
+    _ctrl.selection = TextSelection(baseOffset: 0, extentOffset: raw.length);
+    setState(() => _editing = true);
+    Future.microtask(() => _focus.requestFocus());
+  }
+
+  void _commitEdit() {
+    final text = _ctrl.text.replaceAll(',', '.');
+    final parsed = double.tryParse(text);
+    if (parsed != null && parsed > 0) widget.onEdit?.call(parsed);
+    setState(() => _editing = false);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final text = isInt
-        ? value.toInt().toString()
-        : NumberFormat('#,##0.00', 'pt_BR').format(value);
+    final text = widget.isInt
+        ? widget.value.toInt().toString()
+        : NumberFormat('#,##0.00####', 'pt_BR').format(widget.value);
 
     return Container(
       decoration: BoxDecoration(
@@ -1465,16 +1523,35 @@ class _PriceField extends StatelessWidget {
       ),
       child: Row(children: [
         Expanded(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
-            child: Text(text,
-                style: const TextStyle(
-                    fontFamily: 'RobotoMono', fontSize: 13,
-                    color: FenixColors.textPrimary)),
+          child: GestureDetector(
+            onTap: _startEdit,
+            child: _editing
+                ? Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    child: TextField(
+                      controller: _ctrl,
+                      focusNode: _focus,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(
+                          fontFamily: 'RobotoMono', fontSize: 13,
+                          color: FenixColors.textPrimary),
+                      decoration: const InputDecoration(
+                          border: InputBorder.none, isDense: true,
+                          contentPadding: EdgeInsets.zero),
+                      onSubmitted: (_) => _commitEdit(),
+                    ),
+                  )
+                : Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+                    child: Text(text,
+                        style: const TextStyle(
+                            fontFamily: 'RobotoMono', fontSize: 13,
+                            color: FenixColors.textPrimary)),
+                  ),
           ),
         ),
         InkWell(
-          onTap: onMinus,
+          onTap: widget.onMinus,
           child: Container(
             width: 36, height: 40,
             decoration: const BoxDecoration(
@@ -1484,7 +1561,7 @@ class _PriceField extends StatelessWidget {
           ),
         ),
         InkWell(
-          onTap: onPlus,
+          onTap: widget.onPlus,
           child: Container(
             width: 36, height: 40,
             decoration: const BoxDecoration(
@@ -1497,7 +1574,6 @@ class _PriceField extends StatelessWidget {
     );
   }
 }
-
 class _CheckRow extends StatelessWidget {
   final String label;
   final bool value;
@@ -1569,11 +1645,35 @@ class _GridParams {
 }
 
 class _GridParamsNotifier extends StateNotifier<_GridParams> {
+  double _balanceUsdt = 1000.0;
   _GridParamsNotifier() : super(const _GridParams());
-  void adjustUpper(double d) => state = state.copyWith(upperPrice: (state.upperPrice + d).clamp(0, 1e8));
-  void adjustLower(double d) => state = state.copyWith(lowerPrice: (state.lowerPrice + d).clamp(0, 1e8));
+  void setBalance(double v) { _balanceUsdt = v; }
+  double _step(double v, {double? ref}) {
+    // Se v é zero ou muito pequeno, usa ref (upperPrice) como base
+    final base = (v > 0.000001) ? v : (ref ?? 1.0);
+    if (base >= 10000) return 100;
+    if (base >= 1000)  return 10;
+    if (base >= 100)   return 1;
+    if (base >= 10)    return 0.1;
+    if (base >= 1)     return 0.01;
+    if (base >= 0.1)   return 0.001;
+    if (base >= 0.01)  return 0.0001;
+    return 0.00001;
+  }
+  void adjustUpper(double d) {
+    final step = _step(state.upperPrice) * d.sign;
+    final newVal = (state.upperPrice + step).clamp(state.lowerPrice + step, 1e8);
+    state = state.copyWith(upperPrice: newVal);
+  }
+  void adjustLower(double d) {
+    final step = _step(state.lowerPrice, ref: state.upperPrice) * d.sign;
+    final newVal = (state.lowerPrice + step).clamp(0.000001, state.upperPrice - step);
+    state = state.copyWith(lowerPrice: newVal);
+  }
   void adjustGrids(int d)    => state = state.copyWith(numGrids: (state.numGrids + d).clamp(2, 230));
-  void setAllocationPct(double v) => state = state.copyWith(allocationPct: v, allocatedUsdt: 1000 * v);
+  void setUpper(double v)    => state = state.copyWith(upperPrice: v.clamp(0, 1e8));
+  void setLower(double v)    => state = state.copyWith(lowerPrice: v.clamp(0, 1e8));
+  void setAllocationPct(double v) => state = state.copyWith(allocationPct: v, allocatedUsdt: _balanceUsdt * v);
   void setReinvest(bool v)   => state = state.copyWith(reinvest: v);
   void setTrailingUp(bool v) => state = state.copyWith(trailingUp: v);
   void setTrailingDown(bool v) => state = state.copyWith(trailingDown: v);
@@ -1604,18 +1704,25 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
   Future<void> _create(bool modoReal) async {
     setState(() => _loading = true);
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('access_token') ?? '';
+      final prefs    = await SharedPreferences.getInstance();
+      final token    = prefs.getString('access_token') ?? '';
+      final capital  = widget.params.allocatedUsdt > 0 ? widget.params.allocatedUsdt : 100.0;
+      final niveis   = widget.params.numGrids;
+      final upper    = widget.params.upperPrice;
+      final lower    = widget.params.lowerPrice;
+      final exchange = widget.exchange.toLowerCase();
+
+      // 1. Registrar grid no backend
       final payload = {
-        'symbol':           widget.symbol,
-        'exchange':         widget.exchange,
-        'capital_usdt':     widget.params.allocatedUsdt > 0 ? widget.params.allocatedUsdt : 100.0,
-        'niveis':           widget.params.numGrids,
-        'limite_superior':  widget.params.upperPrice,
-        'limite_inferior':  widget.params.lowerPrice,
-        'espacamento_pct':  widget.params.currentMargin,
+        'symbol':             widget.symbol,
+        'exchange':           exchange,
+        'capital_usdt':       capital,
+        'niveis':             niveis,
+        'limite_superior':    upper,
+        'limite_inferior':    lower,
+        'espacamento_pct':    widget.params.currentMargin,
         'margem_liquida_pct': widget.params.currentMargin,
-        'modo_real':        modoReal,
+        'modo_real':          modoReal,
       };
       final r = await http.post(
         Uri.parse('https://fenixday.info/api/v1/grids'),
@@ -1624,18 +1731,37 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
       ).timeout(const Duration(seconds: 15));
 
       if (!mounted) return;
-      if (r.statusCode == 201) {
+
+      if (r.statusCode != 201) {
+        final err = jsonDecode(r.body)['detail'] ?? r.body;
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Grid ${widget.symbol} criado em modo ${modoReal ? "REAL" : "DEMO"}!'),
+          content: Text('Erro ao registrar grid: $err'),
+          backgroundColor: FenixColors.red,
+        ));
+        return;
+      }
+
+      // 2. Se modo real, criar ordens na exchange
+      if (modoReal) {
+        try {
+          await _createExchangeOrders(exchange, capital, niveis, upper, lower);
+        } catch (e) {
+          if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('Grid criado mas erro nas ordens: $e'),
+            backgroundColor: FenixColors.orange,
+            duration: const Duration(seconds: 5),
+          ));
+          Navigator.maybePop(context);
+          return;
+        }
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Grid ${widget.symbol} criado${modoReal ? " — ordens enviadas!" : " em modo DEMO"}'),
           backgroundColor: FenixColors.green,
         ));
         Navigator.maybePop(context);
-      } else {
-        final err = jsonDecode(r.body)['detail'] ?? r.body;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Erro: $err'),
-          backgroundColor: FenixColors.red,
-        ));
       }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -1647,7 +1773,109 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     }
   }
 
+  Future<void> _createExchangeOrders(String exchange, double capital,
+      int niveis, double upper, double lower) async {
+    const storage = FlutterSecureStorage(
+        aOptions: AndroidOptions(encryptedSharedPreferences: true));
+    final apiKey = await storage.read(key: 'fenix_${exchange}_api_key') ?? '';
+    final secret = await storage.read(key: 'fenix_${exchange}_secret')  ?? '';
+
+    if (apiKey.isEmpty || secret.isEmpty) {
+      throw Exception('API Key da ${widget.exchange} não configurada. Vá em Configurações → Corretoras.');
+    }
+
+    final step         = (upper - lower) / niveis;
+    final capitalOrdem = capital / niveis;
+    final symbol       = widget.symbol;
+
+    // Buscar preço atual
+    double currentPrice = 0;
+    if (exchange == 'binance') {
+      final rp = await http.get(Uri.parse(
+          'https://api.binance.com/api/v3/ticker/price?symbol=$symbol'));
+      currentPrice = double.tryParse(jsonDecode(rp.body)['price'].toString()) ?? 0;
+    } else if (exchange == 'bybit') {
+      final rp = await http.get(Uri.parse(
+          'https://api.bybit.com/v5/market/tickers?category=spot&symbol=$symbol'));
+      currentPrice = double.tryParse(
+          jsonDecode(rp.body)['result']?['list']?[0]?['lastPrice']?.toString() ?? '0') ?? 0;
+    }
+
+    if (currentPrice <= 0) throw Exception('Não foi possível obter preço de $symbol');
+
+    final ordensEnviadas = <String>[];
+    String lastError = 'desconhecido';
+    for (int i = 1; i <= niveis; i++) {
+      final price = lower + step * i;
+      if (price >= currentPrice) continue;
+      final qty = capitalOrdem / price;
+      try {
+        if (exchange == 'binance') {
+          await _binanceOrder(apiKey, secret, symbol, 'BUY', price, qty);
+        } else if (exchange == 'bybit') {
+          await _bybitOrder(apiKey, secret, symbol, 'Buy', price, qty);
+        } else {
+          throw Exception('${widget.exchange} não suporta ordens automáticas ainda.');
+        }
+        ordensEnviadas.add(price.toStringAsFixed(4));
+      } catch (e) {
+        lastError = e.toString();
+      }
+    }
+
+    if (ordensEnviadas.isEmpty) {
+      throw Exception('Nenhuma ordem enviada. Último erro: $lastError');
+    }
+  }
+
+  Future<void> _binanceOrder(String apiKey, String secret, String symbol,
+      String side, double price, double qty) async {
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    final int priceDec = price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8;
+    final int qtyDec   = qty >= 100 ? 2 : qty >= 1 ? 4 : 6;
+    final priceStr = price.toStringAsFixed(priceDec);
+    final qtyStr   = qty.toStringAsFixed(qtyDec);
+    final query    = 'symbol=$symbol&side=$side&type=LIMIT&timeInForce=GTC'
+        '&quantity=$qtyStr&price=$priceStr&timestamp=$ts';
+    final sig = Hmac(sha256, utf8.encode(secret)).convert(utf8.encode(query)).toString();
+    final r = await http.post(
+      Uri.parse('https://api.binance.com/api/v3/order?$query&signature=$sig'),
+      headers: {'X-MBX-APIKEY': apiKey},
+    ).timeout(const Duration(seconds: 10));
+    final body = jsonDecode(r.body);
+    if (body['code'] != null && body['code'] != 0) throw Exception('Binance: ${body["msg"]}');
+  }
+
+  Future<void> _bybitOrder(String apiKey, String secret, String symbol,
+      String side, double price, double qty) async {
+    final ts  = DateTime.now().millisecondsSinceEpoch.toString();
+    // Precisão do preço baseada no valor (Bybit exige precisão correta)
+    final int priceDec = price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8;
+    final int qtyDec   = qty >= 100 ? 2 : qty >= 1 ? 4 : 6;
+    final priceStr = price.toStringAsFixed(priceDec);
+    final qtyStr   = qty.toStringAsFixed(qtyDec);
+    final bodyStr  = jsonEncode({
+      'category': 'spot', 'symbol': symbol, 'side': side,
+      'orderType': 'Limit', 'qty': qtyStr, 'price': priceStr, 'timeInForce': 'GTC',
+    });
+    final sign = Hmac(sha256, utf8.encode(secret))
+        .convert(utf8.encode('$ts${apiKey}5000$bodyStr')).toString();
+    final r = await http.post(
+      Uri.parse('https://api.bybit.com/v5/order/create'),
+      headers: {
+        'X-BAPI-API-KEY': apiKey, 'X-BAPI-TIMESTAMP': ts,
+        'X-BAPI-SIGN': sign, 'X-BAPI-RECV-WINDOW': '5000',
+        'Content-Type': 'application/json',
+      },
+      body: bodyStr,
+    ).timeout(const Duration(seconds: 10));
+    final resp = jsonDecode(r.body);
+    debugPrint('BYBIT RESPONSE: \${r.body}');
+    if (resp['retCode'] != 0) throw Exception('Bybit: ' + (resp['retMsg'] ?? 'erro desconhecido').toString());
+  }
+
   void _showModeDialog() {
+
     showDialog(
       context: context,
       barrierDismissible: true,

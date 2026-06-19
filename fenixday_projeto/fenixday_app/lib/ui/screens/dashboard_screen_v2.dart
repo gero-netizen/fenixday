@@ -4,10 +4,8 @@
 /// • Saldo separado por corretora
 
 import 'dart:convert';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -67,7 +65,11 @@ class _ExchangeNotifier extends StateNotifier<AsyncValue<ExchangeDashboardData>>
   Future<void> fetch() async {
     state = const AsyncValue.loading();
     try {
-      state = AsyncValue.data(await _service.fetchAll());
+      final data = await _service.fetchAll();
+      // Salvar saldo total nas prefs para o scanner usar
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('cached_total_usdt', data.totalUsdtValue);
+      state = AsyncValue.data(data);
     } catch (e, st) { state = AsyncValue.error(e, st); }
   }
 }
@@ -147,7 +149,7 @@ class DashboardScreenV2 extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   late TabController _tabController;
   final _tabs = ['Total', 'Binance', 'Bybit'];
 
@@ -307,9 +309,16 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
                 final availableTabs = modoReal
                     ? ['Total', ...data.activeExchanges]
                     : ['Total'];
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  _updateTabController(availableTabs.length);
-                });
+                // Sincroniza controller antes do build para evitar mismatch
+                if (_tabController.length != availableTabs.length) {
+                  final oldIndex = _tabController.index;
+                  _tabController.dispose();
+                  _tabController = TabController(
+                    length: availableTabs.length,
+                    vsync: this,
+                    initialIndex: oldIndex.clamp(0, availableTabs.length - 1),
+                  );
+                }
                 return TabBarView(
                   controller: _tabController,
                   children: availableTabs.map((tab) {
@@ -970,19 +979,8 @@ class _ModeBadge extends StatelessWidget {
 
 BoxDecoration _cardDeco({Color? topColor}) => BoxDecoration(
   color: FenixColors.card,
-  borderRadius: topColor != null
-      ? const BorderRadius.only(
-          bottomLeft: Radius.circular(8),
-          bottomRight: Radius.circular(8))
-      : BorderRadius.circular(8),
-  border: topColor != null
-      ? Border(
-          top: BorderSide(color: topColor, width: 2),
-          left: BorderSide(color: FenixColors.border, width: .5),
-          right: BorderSide(color: FenixColors.border, width: .5),
-          bottom: BorderSide(color: FenixColors.border, width: .5),
-        )
-      : Border.all(color: FenixColors.border, width: .5),
+  borderRadius: BorderRadius.circular(8),
+  border: Border.all(color: topColor ?? FenixColors.border, width: topColor != null ? 1.5 : .5),
 );
 
 class _Item extends StatelessWidget {
