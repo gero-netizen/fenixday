@@ -136,6 +136,7 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
 
     return Scaffold(
       backgroundColor: FenixColors.bg,
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
         child: Column(
           children: [
@@ -714,7 +715,9 @@ class _PeriodBar extends StatelessWidget {
   Widget build(BuildContext context) => Container(
     color: FenixColors.surface,
     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-    child: Row(children: [
+    child: SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(children: [
       ..._periods.map((p) => Padding(
             padding: const EdgeInsets.symmetric(horizontal: 5),
             child: Text(p,
@@ -722,7 +725,7 @@ class _PeriodBar extends StatelessWidget {
           )),
       const SizedBox(width: 4),
       const Icon(Icons.compare_arrows, size: 12, color: FenixColors.textMuted),
-      const Spacer(),
+      const SizedBox(width: 8),
       Text(
         DateFormat('HH:mm:ss').format(DateTime.now()) + ' (UTC-3)',
         style: const TextStyle(
@@ -737,7 +740,8 @@ class _PeriodBar extends StatelessWidget {
           style: TextStyle(
               fontSize: 10, color: FenixColors.yellow,
               fontWeight: FontWeight.w500)),
-    ]),
+      ]),
+    ),
   );
 }
 
@@ -1622,7 +1626,12 @@ class _GridParams {
     this.tpsl          = false,
   });
 
-  double get currentMargin  => (marginMin + marginMax) / 2;
+  // Margem real: espaçamento entre grades menos taxa Binance (0.2%)
+  double get currentMargin {
+    if (numGrids <= 0 || upperPrice <= lowerPrice) return 0.0;
+    final spacing = ((upperPrice - lowerPrice) / lowerPrice) / numGrids * 100;
+    return (spacing - 0.2).clamp(0.0, 99.0);
+  }
   int    get totalOrders    => numGrids * 2;
   List<double> get computedLevels {
     if (numGrids <= 1) return [];

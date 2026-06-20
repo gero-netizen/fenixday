@@ -67,9 +67,12 @@ class _ExchangeNotifier extends StateNotifier<AsyncValue<ExchangeDashboardData>>
     state = const AsyncValue.loading();
     try {
       final data = await _service.fetchAll();
-      // Salvar saldo total nas prefs para o scanner usar
+      // Salvar saldo por exchange nas prefs para o grid config usar
       final prefs = await SharedPreferences.getInstance();
       await prefs.setDouble('cached_total_usdt', data.totalUsdtValue);
+      for (final entry in data.snapshots.entries) {
+        await prefs.setDouble('cached_usdt_${entry.key.toLowerCase()}', entry.value.totalUsdt);
+      }
       state = AsyncValue.data(data);
     } catch (e, st) { state = AsyncValue.error(e, st); }
   }

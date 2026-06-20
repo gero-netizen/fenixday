@@ -624,8 +624,11 @@ class _PairCardState extends State<_PairCard> {
     await prefs.setDouble('grid_init_upper',     p.bbUpper);
     await prefs.setDouble('grid_init_lower',     p.bbLower);
     await prefs.setInt   ('grid_init_grids',     p.grid.niveis);
-    // Passar saldo real cacheado pelo dashboard
-    final balance = prefs.getDouble('cached_total_usdt') ?? 0.0;
+    // Passar saldo da exchange correta
+    final exchange = prefs.getString('grid_init_exchange')?.toLowerCase() ?? 'binance';
+    final balance = prefs.getDouble('cached_usdt_$exchange')
+        ?? prefs.getDouble('cached_total_usdt')
+        ?? 0.0;
     await prefs.setDouble('grid_init_balance', balance);
     if (context.mounted) context.push('/grids/config');
   }
