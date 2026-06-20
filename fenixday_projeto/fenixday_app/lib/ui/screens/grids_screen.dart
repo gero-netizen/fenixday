@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/fenix_theme.dart';
+import 'shared_providers.dart';
 
 const _baseUrl = 'https://fenixday.info/api/v1';
 
@@ -228,12 +229,35 @@ class GridsScreen extends ConsumerWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(14, 14, 14, 10),
               child: Row(children: [
-                const Expanded(
-                  child: Text('Grids ativos',
-                      style: TextStyle(fontSize: 16,
-                          fontWeight: FontWeight.w500,
-                          color: FenixColors.textPrimary)),
-                ),
+                const Text('Grids ativos',
+                    style: TextStyle(fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: FenixColors.textPrimary)),
+                const SizedBox(width: 8),
+                Consumer(builder: (context, ref, _) {
+                  final modoReal = ref.watch(modoRealProvider);
+                  return GestureDetector(
+                    onTap: () => ref.read(modoRealProvider.notifier).toggle(),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: modoReal ? FenixColors.green.withOpacity(.15) : FenixColors.orange.withOpacity(.15),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: modoReal ? FenixColors.green : FenixColors.orange, width: .5),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.circle, size: 7, color: modoReal ? FenixColors.green : FenixColors.orange),
+                        const SizedBox(width: 4),
+                        Text(modoReal ? 'REAL' : 'DEMO',
+                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600,
+                                color: modoReal ? FenixColors.green : FenixColors.orange)),
+                        const SizedBox(width: 4),
+                        Icon(Icons.swap_horiz, size: 12, color: modoReal ? FenixColors.green : FenixColors.orange),
+                      ]),
+                    ),
+                  );
+                }),
+                const Spacer(),
                 // Novo Grid
                 GestureDetector(
                   onTap: () => context.push('/grids/config'),
@@ -294,11 +318,13 @@ class GridsScreen extends ConsumerWidget {
                   ]),
                 ),
                 data: (grids) {
-                  final ativos  = grids.where((g) => g.isActive).toList();
-                  final pausados = grids.where((g) => g.isPaused).toList();
-                  final parados = grids.where((g) => g.isStopped).toList();
+                  final modoReal = ref.watch(modoRealProvider);
+                  final filtrados = grids.where((g) => g.modoReal == modoReal).toList();
+                  final ativos  = filtrados.where((g) => g.isActive).toList();
+                  final pausados = filtrados.where((g) => g.isPaused).toList();
+                  final parados = filtrados.where((g) => g.isStopped).toList();
 
-                  if (grids.isEmpty) {
+                  if (filtrados.isEmpty) {
                     return Center(
                       child: Column(mainAxisSize: MainAxisSize.min, children: [
                         const Icon(Icons.grid_view_outlined,
@@ -322,9 +348,9 @@ class GridsScreen extends ConsumerWidget {
                     child: ListView(
                       padding: const EdgeInsets.fromLTRB(14, 0, 14, 24),
                       children: [
-                        // Resumo total
-                        _ResumoCard(grids: grids),
-                        const SizedBox(height: 14),
+                        // Resumo total - só mostra se tiver grids
+                        if (filtrados.isNotEmpty) _ResumoCard(grids: filtrados),
+                        if (filtrados.isNotEmpty) const SizedBox(height: 14),
 
                         if (ativos.isNotEmpty) ...[
                           _SectionLabel('Ativos (${ativos.length})',
@@ -392,12 +418,7 @@ class _ResumoCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: FenixColors.card,
         borderRadius: BorderRadius.circular(10),
-        border: Border(
-          top:    const BorderSide(color: FenixColors.yellow, width: 2),
-          left:   BorderSide(color: FenixColors.border, width: .5),
-          right:  BorderSide(color: FenixColors.border, width: .5),
-          bottom: BorderSide(color: FenixColors.border, width: .5),
-        ),
+        border: Border.all(color: FenixColors.yellow, width: 1),
       ),
       child: Column(children: [
         Row(children: [

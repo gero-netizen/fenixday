@@ -11,6 +11,7 @@ import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
+import 'shared_providers.dart';
 import 'services/exchange_service.dart';
 
 const _baseUrl = 'https://fenixday.info/api/v1';
@@ -79,27 +80,6 @@ final _exchangeProvider =
   (ref) => _ExchangeNotifier(),
 );
 
-// ── Provider de modo real (toggle) ────────────────────────────────────────────
-
-final _modoRealProvider = StateNotifierProvider<_ModoRealNotifier, bool>(
-  (ref) => _ModoRealNotifier(),
-);
-
-class _ModoRealNotifier extends StateNotifier<bool> {
-  _ModoRealNotifier() : super(true) { _load(); }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = prefs.getBool('fenix_modo_real') ?? true;
-  }
-
-  Future<void> toggle() async {
-    final prefs = await SharedPreferences.getInstance();
-    state = !state;
-    await prefs.setBool('fenix_modo_real', state);
-  }
-}
-
 // ── Tela ──────────────────────────────────────────────────────────────────────
 
 
@@ -115,13 +95,14 @@ class _GridSummary {
 }
 class _GridSummaryNotifier extends StateNotifier<AsyncValue<_GridSummary>> {
   _GridSummaryNotifier() : super(const AsyncValue.loading()) { fetch(); }
-  Future<void> fetch() async {
+  Future<void> fetch({bool? modoReal}) async {
     state = const AsyncValue.loading();
     try {
       final prefs = await SharedPreferences.getInstance();
       final token = prefs.getString('access_token') ?? '';
+      final modo = modoReal ?? (prefs.getBool('fenix_modo_real') ?? true);
       final r = await http.get(
-        Uri.parse('https://fenixday.info/api/v1/grids/summary'),
+        Uri.parse('https://fenixday.info/api/v1/grids/summary?modo_real=$modo'),
         headers: {'Authorization': 'Bearer $token'},
       ).timeout(const Duration(seconds: 10));
       if (r.statusCode == 200) {
@@ -183,7 +164,7 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
   Widget build(BuildContext context) {
     final userAsync     = ref.watch(_userProvider);
     final exchangeAsync = ref.watch(_exchangeProvider);
-    final modoReal      = ref.watch(_modoRealProvider);
+    final modoReal      = ref.watch(modoRealProvider);
     final now = DateFormat('dd/MM/yyyy · HH:mm:ss').format(DateTime.now());
 
     return Scaffold(
@@ -237,7 +218,11 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
                         )),
                         // Badge modo real/demo — clicável
                         GestureDetector(
-                          onTap: () => ref.read(_modoRealProvider.notifier).toggle(),
+                          onTap: () async {
+                            await ref.read(modoRealProvider.notifier).toggle();
+                            final novoModo = ref.read(modoRealProvider);
+                            ref.read(_gridSummaryProvider.notifier).fetch(modoReal: novoModo);
+                          },
                           child: _ModeBadge(realMode: modoReal),
                         ),
                       ]),
@@ -501,11 +486,7 @@ class _TabContent extends ConsumerWidget {
                         decoration: BoxDecoration(
                           color: FenixColors.card,
                           borderRadius: BorderRadius.circular(10),
-                          border: const Border(
-                            top: BorderSide(color: FenixColors.orange, width: 2),
-                            left: BorderSide(color: FenixColors.border, width: .5),
-                            right: BorderSide(color: FenixColors.border, width: .5),
-                            bottom: BorderSide(color: FenixColors.border, width: .5)),
+                          border: Border.all(color: FenixColors.orange, width: 1),
                         ),
                         child: Row(children: [
                           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -570,9 +551,9 @@ class _TabContent extends ConsumerWidget {
                         style: const TextStyle(fontSize: 10, color: FenixColors.red))),
                   ]),
                 ),
-            _SectionTitle('Patrimônio total em operação'),
-            const SizedBox(height: 6),
-            Container(
+            if (_totalUsdt > 0) _SectionTitle('Patrimônio total em operação'),
+            if (_totalUsdt > 0) const SizedBox(height: 6),
+            if (_totalUsdt > 0) Container(
               padding: const EdgeInsets.all(14),
               decoration: _cardDeco(topColor: FenixColors.yellow),
               child: Column(children: [
@@ -612,12 +593,11 @@ class _TabContent extends ConsumerWidget {
               ]),
             ),
             const SizedBox(height: 14),
-            _SectionTitle('Lucro de grid — ciclos fechados hoje'),
-            const SizedBox(height: 6),
-            Container(
+            if (data.ciclosFechadosHoje > 0) _SectionTitle('Lucro de grid — ciclos fechados hoje'),
+            if (data.ciclosFechadosHoje > 0) const SizedBox(height: 6),
+            if (data.ciclosFechadosHoje > 0) Container(
               padding: const EdgeInsets.all(14),
-              decoration: _cardDeco(
-                  topColor: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red),
+              decoration: _cardDeco(topColor: data.realizedPnlHoje >= 0 ? FenixColors.green : FenixColors.red),
               child: Row(children: [
                 Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(

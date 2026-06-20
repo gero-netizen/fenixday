@@ -349,7 +349,9 @@ class _HorizontalToolbar extends ConsumerWidget {
     return Container(
       color: FenixColors.surface,
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      child: Row(
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
         children: [
           // Timeframes
           ..._tfs.map((tf) => _TfBtn(
@@ -376,7 +378,7 @@ class _HorizontalToolbar extends ConsumerWidget {
             onTap: () {},
           ),
 
-          const Spacer(),
+          const SizedBox(width: 8),
 
           // Trading View
           _OutlineBtn(label: 'Trading View', onTap: () {}),
@@ -389,6 +391,7 @@ class _HorizontalToolbar extends ConsumerWidget {
           // Configurações
           _IconBtn(icon: Icons.settings_outlined, tooltip: 'Configurações'),
         ],
+        ),
       ),
     );
   }
