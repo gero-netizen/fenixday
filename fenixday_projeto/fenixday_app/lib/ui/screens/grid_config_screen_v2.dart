@@ -122,6 +122,7 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
     }
     // Carregar saldo real da exchange
     final balance = prefs.getDouble('grid_init_balance');
+    debugPrint('FENIX_BALANCE: grid_init_balance=$balance');
     if (balance != null && balance > 0) {
       ref.read(_paramsProvider.notifier).setBalance(balance);
       await prefs.remove('grid_init_balance');
@@ -155,7 +156,8 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
                       _ParamsPanel(mobile: true),
                     ]),
             ),
-            _SummaryBar(),
+            // Esconder SummaryBar quando teclado está aberto
+            if (MediaQuery.of(context).viewInsets.bottom == 0) _SummaryBar(),
           ],
         ),
       ),
@@ -611,7 +613,8 @@ class _ChartArea extends ConsumerWidget {
 
     return Container(
       color: FenixColors.bg,
-      child: Column(
+      child: ClipRect(
+        child: Column(
         children: [
           // Info OHLC
           asyncCandles.when(
@@ -632,7 +635,9 @@ class _ChartArea extends ConsumerWidget {
               return Container(
                 color: FenixColors.bg,
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                child: Row(children: [
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
                   Text('${symbol.replaceAll('USDT', '/USDT')} · $tf · BINANCE',
                       style: const TextStyle(fontFamily: 'RobotoMono',
                           fontSize: 10, color: FenixColors.textMuted)),
@@ -644,7 +649,8 @@ class _ChartArea extends ConsumerWidget {
                   Text(' ${chg >= 0 ? "+" : ""}${chg.toStringAsFixed(2)} (${chgPct.toStringAsFixed(2)}%)',
                       style: TextStyle(fontFamily: 'RobotoMono', fontSize: 10,
                           color: chg >= 0 ? FenixColors.green : FenixColors.red)),
-                ]),
+                  ]),
+                ),
               );
             },
           ),
@@ -684,6 +690,7 @@ class _ChartArea extends ConsumerWidget {
           // Barra de períodos e info rodapé
           _PeriodBar(),
         ],
+        ),
       ),
     );
   }
