@@ -643,6 +643,22 @@ class ExchangeService {
   final _okx       = _OkxService();
   final _cryptocom = _CryptoComService();
 
+  /// Busca o saldo USDT de uma exchange específica
+  Future<double> fetchUsdtBalance(String exchange) async {
+    try {
+      final ex = exchange.toLowerCase();
+      ExchangeSnapshot snap;
+      if (ex == 'binance')        snap = await _binance.fetchSnapshot();
+      else if (ex == 'bybit')     snap = await _bybit.fetchSnapshot();
+      else if (ex == 'okx')       snap = await _okx.fetchSnapshot();
+      else if (ex == 'crypto.com' || ex == 'cryptocom') snap = await _cryptocom.fetchSnapshot();
+      else return 0.0;
+      return snap.totalUsdt;
+    } catch (e) {
+      return 0.0;
+    }
+  }
+
   Future<ExchangeDashboardData> fetchAll() async {
     // Busca todas as exchanges em paralelo
     final results = await Future.wait([

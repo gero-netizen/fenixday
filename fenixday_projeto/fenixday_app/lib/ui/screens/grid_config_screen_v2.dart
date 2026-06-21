@@ -17,6 +17,7 @@ import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../theme/fenix_theme.dart';
+import 'services/exchange_service.dart';
 import '../widgets/chart/candlestick_chart.dart';
 
 // ── Breakpoints ──────────────────────────────────────────────────────────────
@@ -120,13 +121,13 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
       await prefs.remove('grid_init_lower');
       await prefs.remove('grid_init_grids');
     }
-    // Carregar saldo real da exchange
-    final balance = prefs.getDouble('grid_init_balance');
-    debugPrint('FENIX_BALANCE: grid_init_balance=$balance');
-    if (balance != null && balance > 0) {
-      ref.read(_paramsProvider.notifier).setBalance(balance);
-      await prefs.remove('grid_init_balance');
+    // Buscar saldo real da exchange direto da API
+    final exNow = ref.read(_exchangeProvider);
+    final saldo = await ExchangeService().fetchUsdtBalance(exNow);
+    if (saldo > 0 && mounted) {
+      ref.read(_paramsProvider.notifier).setBalance(saldo);
     }
+    await prefs.remove('grid_init_balance');
   }
 
   @override
@@ -152,8 +153,11 @@ class _GridConfigScreenV2State extends ConsumerState<GridConfigScreenV2> {
                       SizedBox(width: isDesktop ? 300 : 240, child: _ParamsPanel()),
                     ])
                   : Column(children: [
-                      Expanded(child: _ChartArea(showVerticalToolbar: false)),
-                      _ParamsPanel(mobile: true),
+                      SizedBox(
+                        height: MediaQuery.of(context).viewInsets.bottom > 0 ? 0 : 260,
+                        child: _ChartArea(showVerticalToolbar: false),
+                      ),
+                      Expanded(child: _ParamsPanel(mobile: true)),
                     ]),
             ),
             // Esconder SummaryBar quando teclado está aberto
@@ -302,7 +306,13 @@ class _PairHeader extends ConsumerWidget {
               fontSize: 14, fontWeight: FontWeight.w600, color: FenixColors.textPrimary)),
           const SizedBox(height: 12),
           ..._kExchanges.map((e) => ListTile(
-            onTap: () { ref.read(_exchangeProvider.notifier).state = e; Navigator.pop(ctx); },
+            onTap: () async {
+              ref.read(_exchangeProvider.notifier).state = e;
+              Navigator.pop(ctx);
+              // Buscar saldo real da exchange selecionada
+              final saldo = await ExchangeService().fetchUsdtBalance(e);
+              if (saldo > 0) ref.read(_paramsProvider.notifier).setBalance(saldo);
+            },
             leading: Container(
               width: 36, height: 36,
               decoration: BoxDecoration(
@@ -936,7 +946,7 @@ class _ParamsPanelState extends ConsumerState<_ParamsPanel>
                     const SizedBox(height: 4),
                     Consumer(builder: (ctx, ref, _) {
                       final params = ref.watch(_paramsProvider);
-                      return Text('Disponível ${NumberFormat('#,##0.00', 'pt_BR').format(ref.read(_paramsProvider.notifier)._balanceUsdt)} USDT',
+                      return Text('Disponível ${NumberFormat('#,##0.00', 'pt_BR').format(params.balanceUsdt)} USDT',
                         style: const TextStyle(
                             fontSize: 10, color: FenixColors.textMuted));
                     }),
@@ -1617,6 +1627,7 @@ class _GridParams {
   final int numGrids;
   final double marginMin, marginMax;
   final double allocatedUsdt, allocationPct;
+  final double balanceUsdt;
   final bool reinvest, trailingUp, trailingDown, tpsl;
 
   const _GridParams({
@@ -1627,6 +1638,7 @@ class _GridParams {
     this.marginMax     = 0.48,
     this.allocatedUsdt = 0.0,
     this.allocationPct = 0.0,
+    this.balanceUsdt = 1000.0,
     this.reinvest      = true,
     this.trailingUp    = false,
     this.trailingDown  = false,
@@ -1648,7 +1660,7 @@ class _GridParams {
 
   _GridParams copyWith({
     double? upperPrice, double? lowerPrice, int? numGrids,
-    double? allocatedUsdt, double? allocationPct,
+    double? allocatedUsdt, double? allocationPct, double? balanceUsdt,
     bool? reinvest, bool? trailingUp, bool? trailingDown, bool? tpsl,
   }) => _GridParams(
     upperPrice:    upperPrice    ?? this.upperPrice,
@@ -1656,6 +1668,7 @@ class _GridParams {
     numGrids:      numGrids      ?? this.numGrids,
     allocatedUsdt: allocatedUsdt ?? this.allocatedUsdt,
     allocationPct: allocationPct ?? this.allocationPct,
+    balanceUsdt: balanceUsdt ?? this.balanceUsdt,
     reinvest:      reinvest      ?? this.reinvest,
     trailingUp:    trailingUp    ?? this.trailingUp,
     trailingDown:  trailingDown  ?? this.trailingDown,
@@ -1666,7 +1679,10 @@ class _GridParams {
 class _GridParamsNotifier extends StateNotifier<_GridParams> {
   double _balanceUsdt = 1000.0;
   _GridParamsNotifier() : super(const _GridParams());
-  void setBalance(double v) { _balanceUsdt = v; }
+  void setBalance(double v) {
+    _balanceUsdt = v;
+    state = state.copyWith(balanceUsdt: v, allocatedUsdt: v * state.allocationPct);
+  }
   double _step(double v, {double? ref}) {
     // Se v é zero ou muito pequeno, usa ref (upperPrice) como base
     final base = (v > 0.000001) ? v : (ref ?? 1.0);
@@ -1692,7 +1708,7 @@ class _GridParamsNotifier extends StateNotifier<_GridParams> {
   void adjustGrids(int d)    => state = state.copyWith(numGrids: (state.numGrids + d).clamp(2, 230));
   void setUpper(double v)    => state = state.copyWith(upperPrice: v.clamp(0, 1e8));
   void setLower(double v)    => state = state.copyWith(lowerPrice: v.clamp(0, 1e8));
-  void setAllocationPct(double v) => state = state.copyWith(allocationPct: v, allocatedUsdt: _balanceUsdt * v);
+  void setAllocationPct(double v) => state = state.copyWith(allocationPct: v, allocatedUsdt: state.balanceUsdt * v);
   void setReinvest(bool v)   => state = state.copyWith(reinvest: v);
   void setTrailingUp(bool v) => state = state.copyWith(trailingUp: v);
   void setTrailingDown(bool v) => state = state.copyWith(trailingDown: v);
@@ -1822,21 +1838,55 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
 
     if (currentPrice <= 0) throw Exception('Não foi possível obter preço de $symbol');
 
+    // Buscar precisão real do par (tickSize do preço e basePrecision da qty)
+    double tickSize = 0;
+    double qtyStep  = 0;
+    if (exchange == 'bybit') {
+      final ri = await http.get(Uri.parse(
+          'https://api.bybit.com/v5/market/instruments-info?category=spot&symbol=$symbol'));
+      final info = jsonDecode(ri.body)['result']?['list']?[0];
+      tickSize = double.tryParse(info?['priceFilter']?['tickSize']?.toString() ?? '0') ?? 0;
+      qtyStep  = double.tryParse(info?['lotSizeFilter']?['basePrecision']?.toString() ?? '0') ?? 0;
+    } else if (exchange == 'binance') {
+      final ri = await http.get(Uri.parse(
+          'https://api.binance.com/api/v3/exchangeInfo?symbol=$symbol'));
+      final filters = (jsonDecode(ri.body)['symbols']?[0]?['filters'] as List?) ?? [];
+      for (final f in filters) {
+        if (f['filterType'] == 'PRICE_FILTER') {
+          tickSize = double.tryParse(f['tickSize']?.toString() ?? '0') ?? 0;
+        } else if (f['filterType'] == 'LOT_SIZE') {
+          qtyStep = double.tryParse(f['stepSize']?.toString() ?? '0') ?? 0;
+        }
+      }
+    }
+
     final ordensEnviadas = <String>[];
     String lastError = 'desconhecido';
     for (int i = 1; i <= niveis; i++) {
-      final price = lower + step * i;
+      var price = lower + step * i;
       if (price >= currentPrice) continue;
-      final qty = capitalOrdem / price;
+      var qty = capitalOrdem / price;
+      // Arredondar para o tick/step correto do par (round evita erro de float)
+      if (tickSize > 0) {
+        price = (price / tickSize).round() * tickSize;
+        // Re-arredondar para os decimais do tick para limpar lixo de float
+        final pd = _decimalsFromStep(tickSize);
+        price = double.parse(price.toStringAsFixed(pd));
+      }
+      if (qtyStep > 0) {
+        qty = (qty / qtyStep).floor() * qtyStep;
+        final qd = _decimalsFromStep(qtyStep);
+        qty = double.parse(qty.toStringAsFixed(qd));
+      }
       try {
         if (exchange == 'binance') {
-          await _binanceOrder(apiKey, secret, symbol, 'BUY', price, qty);
+          await _binanceOrder(apiKey, secret, symbol, 'BUY', price, qty, tickSize, qtyStep);
         } else if (exchange == 'bybit') {
-          await _bybitOrder(apiKey, secret, symbol, 'Buy', price, qty);
+          await _bybitOrder(apiKey, secret, symbol, 'Buy', price, qty, tickSize, qtyStep);
         } else {
           throw Exception('${widget.exchange} não suporta ordens automáticas ainda.');
         }
-        ordensEnviadas.add(price.toStringAsFixed(4));
+        ordensEnviadas.add(price.toStringAsFixed(8));
       } catch (e) {
         lastError = e.toString();
       }
@@ -1847,11 +1897,23 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     }
   }
 
+  // Conta casas decimais a partir do step (0.001 -> 3)
+  int _decimalsFromStep(double step) {
+    if (step <= 0) return 8;
+    final s = step.toStringAsFixed(12).replaceAll(RegExp(r'0+\$'), '');
+    final dot = s.indexOf('.');
+    if (dot < 0) return 0;
+    return s.length - dot - 1;
+  }
+
   Future<void> _binanceOrder(String apiKey, String secret, String symbol,
-      String side, double price, double qty) async {
+      String side, double price, double qty,
+      [double tickSize = 0, double qtyStep = 0]) async {
     final ts = DateTime.now().millisecondsSinceEpoch.toString();
-    final int priceDec = price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8;
-    final int qtyDec   = qty >= 100 ? 2 : qty >= 1 ? 4 : 6;
+    final int priceDec = tickSize > 0 ? _decimalsFromStep(tickSize)
+        : (price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8);
+    final int qtyDec   = qtyStep > 0 ? _decimalsFromStep(qtyStep)
+        : (qty >= 100 ? 2 : qty >= 1 ? 4 : 6);
     final priceStr = price.toStringAsFixed(priceDec);
     final qtyStr   = qty.toStringAsFixed(qtyDec);
     final query    = 'symbol=$symbol&side=$side&type=LIMIT&timeInForce=GTC'
@@ -1866,11 +1928,14 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
   }
 
   Future<void> _bybitOrder(String apiKey, String secret, String symbol,
-      String side, double price, double qty) async {
+      String side, double price, double qty,
+      [double tickSize = 0, double qtyStep = 0]) async {
     final ts  = DateTime.now().millisecondsSinceEpoch.toString();
-    // Precisão do preço baseada no valor (Bybit exige precisão correta)
-    final int priceDec = price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8;
-    final int qtyDec   = qty >= 100 ? 2 : qty >= 1 ? 4 : 6;
+    // Precisão real do par (tickSize/basePrecision da Bybit)
+    final int priceDec = tickSize > 0 ? _decimalsFromStep(tickSize)
+        : (price >= 1000 ? 2 : price >= 10 ? 3 : price >= 1 ? 4 : price >= 0.1 ? 5 : price >= 0.01 ? 6 : 8);
+    final int qtyDec   = qtyStep > 0 ? _decimalsFromStep(qtyStep)
+        : (qty >= 100 ? 2 : qty >= 1 ? 4 : 6);
     final priceStr = price.toStringAsFixed(priceDec);
     final qtyStr   = qty.toStringAsFixed(qtyDec);
     final bodyStr  = jsonEncode({
@@ -1889,7 +1954,6 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
       body: bodyStr,
     ).timeout(const Duration(seconds: 10));
     final resp = jsonDecode(r.body);
-    debugPrint('BYBIT RESPONSE: \${r.body}');
     if (resp['retCode'] != 0) throw Exception('Bybit: ' + (resp['retMsg'] ?? 'erro desconhecido').toString());
   }
 
