@@ -21,6 +21,7 @@ import 'ui/screens/license_screen_v3.dart';
 import 'ui/screens/admin_screen_v2.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'ui/screens/services/grid_monitor.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/settings/vpn_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
@@ -202,6 +203,18 @@ class _MainShellState extends ConsumerState<_MainShell> {
   ];
 
   int _currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    GridMonitor.instance.iniciar();
+  }
+
+  @override
+  void dispose() {
+    GridMonitor.instance.parar();
+    super.dispose();
+  }
 
   void _onTap(int index) {
     setState(() => _currentIndex = index);

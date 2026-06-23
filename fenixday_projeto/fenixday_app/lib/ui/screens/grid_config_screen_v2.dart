@@ -1883,16 +1883,18 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
         qty = double.parse(qty.toStringAsFixed(qd));
       }
       try {
+        String orderId = '';
         if (exchange == 'binance') {
-          await _binanceOrder(apiKey, secret, symbol, 'BUY', price, qty, tickSize, qtyStep);
+          orderId = await _binanceOrder(apiKey, secret, symbol, 'BUY', price, qty, tickSize, qtyStep);
         } else if (exchange == 'bybit') {
-          await _bybitOrder(apiKey, secret, symbol, 'Buy', price, qty, tickSize, qtyStep);
+          orderId = await _bybitOrder(apiKey, secret, symbol, 'Buy', price, qty, tickSize, qtyStep);
         } else {
           throw Exception('${widget.exchange} não suporta ordens automáticas ainda.');
         }
         ordensEnviadas.add(price.toStringAsFixed(8));
         // Acumular para registro no backend (venda futura no nível acima)
         ordensParaRegistrar.add({
+          'exchange_order_id': orderId,
           'nivel': i,
           'side': 'BUY',
           'price': price,
@@ -1930,7 +1932,7 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     return s.length - dot - 1;
   }
 
-  Future<void> _binanceOrder(String apiKey, String secret, String symbol,
+  Future<String> _binanceOrder(String apiKey, String secret, String symbol,
       String side, double price, double qty,
       [double tickSize = 0, double qtyStep = 0]) async {
     final ts = DateTime.now().millisecondsSinceEpoch.toString();
@@ -1949,9 +1951,10 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     ).timeout(const Duration(seconds: 10));
     final body = jsonDecode(r.body);
     if (body['code'] != null && body['code'] != 0) throw Exception('Binance: ${body["msg"]}');
+    return body['orderId']?.toString() ?? '';
   }
 
-  Future<void> _bybitOrder(String apiKey, String secret, String symbol,
+  Future<String> _bybitOrder(String apiKey, String secret, String symbol,
       String side, double price, double qty,
       [double tickSize = 0, double qtyStep = 0]) async {
     final ts  = DateTime.now().millisecondsSinceEpoch.toString();
@@ -1979,6 +1982,7 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     ).timeout(const Duration(seconds: 10));
     final resp = jsonDecode(r.body);
     if (resp['retCode'] != 0) throw Exception('Bybit: ' + (resp['retMsg'] ?? 'erro desconhecido').toString());
+    return resp['result']?['orderId']?.toString() ?? '';
   }
 
   void _showModeDialog() {
