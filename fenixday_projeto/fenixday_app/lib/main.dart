@@ -19,6 +19,8 @@ import 'ui/screens/top_grids_screen.dart';
 import 'ui/screens/paper_trading_screen.dart';
 import 'ui/screens/license_screen_v3.dart';
 import 'ui/screens/admin_screen_v2.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/settings/vpn_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
@@ -334,9 +336,58 @@ class _SettingsScreen extends StatelessWidget {
               onTap: () => context.push('/admin'),
             );
           }),
+          const SizedBox(height: 8),
+          const Divider(color: FenixColors.border, height: 1),
+          const SizedBox(height: 8),
+          _SettingsTile(
+            icon:  Icons.logout,
+            label: 'Sair da conta',
+            color: FenixColors.red,
+            onTap: () => _confirmLogout(context),
+          ),
         ],
       ),
     );
+  }
+
+  void _confirmLogout(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: FenixColors.card,
+        title: const Text('Sair da conta',
+            style: TextStyle(color: FenixColors.textPrimary, fontSize: 16)),
+        content: const Text('Tem certeza que deseja sair? Você precisará fazer login novamente.',
+            style: TextStyle(color: FenixColors.textMuted, fontSize: 13)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('Cancelar', style: TextStyle(color: FenixColors.textMuted)),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(dialogCtx);
+              await _doLogout(context);
+            },
+            child: const Text('Sair', style: TextStyle(color: FenixColors.red, fontWeight: FontWeight.w600)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _doLogout(BuildContext context) async {
+    // Desconectar do Google
+    try {
+      await GoogleSignIn().signOut();
+    } catch (_) {}
+    // Limpar dados de sessão
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('access_token');
+    await prefs.remove('is_superuser');
+    await prefs.remove('fenix_modo_real');
+    // Redirecionar para login
+    if (context.mounted) context.go('/login');
   }
 }
 

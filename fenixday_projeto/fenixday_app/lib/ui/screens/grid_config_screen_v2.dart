@@ -1776,10 +1776,13 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
         return;
       }
 
+      // Capturar o ID do grid criado (para registrar as ordens)
+      final gridId = jsonDecode(r.body)['id']?.toString() ?? '';
+
       // 2. Se modo real, criar ordens na exchange
       if (modoReal) {
         try {
-          await _createExchangeOrders(exchange, capital, niveis, upper, lower);
+          await _createExchangeOrders(exchange, capital, niveis, upper, lower, gridId, token);
         } catch (e) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Grid criado mas erro nas ordens: $e'),
@@ -1809,7 +1812,7 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
   }
 
   Future<void> _createExchangeOrders(String exchange, double capital,
-      int niveis, double upper, double lower) async {
+      int niveis, double upper, double lower, String gridId, String token) async {
     const storage = FlutterSecureStorage(
         aOptions: AndroidOptions(encryptedSharedPreferences: true));
     final apiKey = await storage.read(key: 'fenix_${exchange}_api_key') ?? '';
@@ -1861,6 +1864,7 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     }
 
     final ordensEnviadas = <String>[];
+    final ordensParaRegistrar = <Map<String, dynamic>>[];
     String lastError = 'desconhecido';
     for (int i = 1; i <= niveis; i++) {
       var price = lower + step * i;
@@ -1887,6 +1891,15 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
           throw Exception('${widget.exchange} não suporta ordens automáticas ainda.');
         }
         ordensEnviadas.add(price.toStringAsFixed(8));
+        // Acumular para registro no backend (venda futura no nível acima)
+        ordensParaRegistrar.add({
+          'nivel': i,
+          'side': 'BUY',
+          'price': price,
+          'qty': qty,
+          'par_price': double.parse((price + step).toStringAsFixed(8)),
+          'status': 'open',
+        });
       } catch (e) {
         lastError = e.toString();
       }
@@ -1895,12 +1908,23 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     if (ordensEnviadas.isEmpty) {
       throw Exception('Nenhuma ordem enviada. Último erro: $lastError');
     }
+    // Registrar ordens no backend (para o monitor fechar ciclos)
+    if (gridId.isNotEmpty && ordensParaRegistrar.isNotEmpty) {
+      try {
+        final rr = await http.post(
+          Uri.parse('https://fenixday.info/api/v1/grids/$gridId/orders'),
+          headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+          body: jsonEncode(ordensParaRegistrar),
+        ).timeout(const Duration(seconds: 15));
+      } catch (e) {
+      }
+    }
   }
 
   // Conta casas decimais a partir do step (0.001 -> 3)
   int _decimalsFromStep(double step) {
     if (step <= 0) return 8;
-    final s = step.toStringAsFixed(12).replaceAll(RegExp(r'0+\$'), '');
+    final s = step.toStringAsFixed(12).replaceAll(RegExp(r'0+$'), '');
     final dot = s.indexOf('.');
     if (dot < 0) return 0;
     return s.length - dot - 1;

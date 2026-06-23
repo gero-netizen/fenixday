@@ -47,7 +47,10 @@ class _AuthState {
 class _AuthNotifier extends StateNotifier<_AuthState> {
   _AuthNotifier() : super(const _AuthState());
 
-  final _googleSignIn = GoogleSignIn(scopes: ['email', 'profile']);
+  final _googleSignIn = GoogleSignIn(
+    scopes: ['email', 'profile'],
+    serverClientId: '657112203344-ljoj6566q6mq23vnhbh2l795eje5h2bj.apps.googleusercontent.com',
+  );
 
   Future<void> _saveToken(String token) async {
     final prefs = await SharedPreferences.getInstance();
