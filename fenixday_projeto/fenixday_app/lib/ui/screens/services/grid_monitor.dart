@@ -113,26 +113,20 @@ class GridMonitor {
     final parPrice  = (ordem['par_price'] as num?)?.toDouble() ?? 0;
     if (orderDbId.isEmpty || parPrice <= 0) return;
 
-    // 1) IDEMPOTÊNCIA: marcar a ordem como filled ANTES de agir,
-    //    para não reprocessar a mesma execução no próximo ciclo.
-    final marcou = await _marcarFilled(orderDbId, token);
-    if (!marcou) {
-      debugPrint('GRID_MONITOR: falha ao marcar filled $orderDbId, abortando esta ordem');
-      return;
-    }
-
-    // 2) Buscar precisão do par (tickSize/qtyStep)
+    // Preparar precisão e chaves ANTES de criar a ordem oposta.
     final prec = await _precisaoPar(exchange, symbol);
     final tickSize = prec['tickSize'] ?? 0;
     final qtyStep  = prec['qtyStep'] ?? 0;
 
-    // 3) Criar a ordem oposta
     final chaves = await _chaves(exchange);
     if (chaves == null) {
       debugPrint('GRID_MONITOR: sem chaves para $exchange');
       return;
     }
     final apiKey = chaves[0], secret = chaves[1];
+
+    // ESTRATÉGIA: criar a ordem oposta PRIMEIRO. Só marcar filled se a
+    // criação teve sucesso — assim um ciclo nunca é perdido por falha.
 
     if (side == 'BUY') {
       // BUY executou -> criar SELL no par_price (nível acima)
@@ -160,8 +154,10 @@ class GridMonitor {
           'par_price': price,   // quando a SELL executar, recolocar BUY aqui
           'status': 'open',
         });
+        // SÓ AGORA marca a BUY como filled (venda criada com sucesso)
+        await _marcarFilled(orderDbId, token);
       } catch (e) {
-        debugPrint('GRID_MONITOR: erro ao criar SELL: $e');
+        debugPrint('GRID_MONITOR: erro ao criar SELL: $e (ordem fica open, retenta)');
       }
     } else if (side == 'SELL') {
       // SELL executou -> ciclo fechado! Recolocar BUY no par_price (nível abaixo)
@@ -188,9 +184,21 @@ class GridMonitor {
           'par_price': price,   // quando a BUY executar, vender aqui de novo
           'status': 'open',
         });
-        // Contabilizar lucro do ciclo (Peça 4) — feito no próximo passo
+        // SÓ AGORA marca a SELL como filled (compra recolocada com sucesso)
+        await _marcarFilled(orderDbId, token);
+
+        // PEÇA 4: contabilizar lucro do ciclo.
+        // precoVenda = price (a SELL que executou); precoCompra = parPrice
+        final precoVenda  = price;
+        final precoCompra = parPrice;
+        final lucroBruto  = (precoVenda - precoCompra) * qty;
+        final taxas       = (precoVenda + precoCompra) * qty * 0.001; // ~0,1%/ponta
+        final lucroLiq    = lucroBruto - taxas;
+        final volume      = (precoVenda + precoCompra) * qty;
+        await _registrarCicloFechado(gridId, token, lucroLiq, volume);
+        debugPrint('GRID_MONITOR: lucro do ciclo = \$${lucroLiq.toStringAsFixed(4)}');
       } catch (e) {
-        debugPrint('GRID_MONITOR: erro ao recolocar BUY: $e');
+        debugPrint('GRID_MONITOR: erro ao recolocar BUY: $e (ordem fica open, retenta)');
       }
     }
   }
@@ -293,6 +301,20 @@ class GridMonitor {
       ).timeout(const Duration(seconds: 10));
     } catch (e) {
       debugPrint('GRID_MONITOR: erro ao registrar nova ordem: $e');
+    }
+  }
+
+  /// Registra um ciclo fechado (lucro realizado) no backend.
+  Future<void> _registrarCicloFechado(
+      String gridId, String token, double lucro, double volume) async {
+    try {
+      await http.post(
+        Uri.parse('$_baseUrl/grids/$gridId/cycle-closed'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({'lucro': lucro, 'volume': volume}),
+      ).timeout(const Duration(seconds: 10));
+    } catch (e) {
+      debugPrint('GRID_MONITOR: erro ao registrar ciclo: $e');
     }
   }
 
