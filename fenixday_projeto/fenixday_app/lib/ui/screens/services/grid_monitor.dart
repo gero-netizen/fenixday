@@ -87,7 +87,10 @@ class GridMonitor {
     // Distingue execução de cancelamento — crucial para não vender o que
     // não foi comprado.
     final statusReais = await _statusOrdensNaCorretora(exchange, symbol);
-    if (statusReais == null) return;   // erro de rede, tenta no próximo ciclo
+    if (statusReais == null) return;
+    for (final o in ordensOpen) {
+      final dbgOid = o['exchange_order_id']?.toString() ?? '';
+    }
 
     for (final o in ordensOpen) {
       final oid = o['exchange_order_id']?.toString() ?? '';
