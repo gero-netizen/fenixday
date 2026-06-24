@@ -83,19 +83,26 @@ class GridMonitor {
     final ordensOpen = await _buscarOrdensOpen(gridId, token);
     if (ordensOpen.isEmpty) return;
 
-    final abertosNaCorretora = await _ordensAbertasNaCorretora(exchange, symbol);
-    if (abertosNaCorretora == null) return;   // erro de rede, tenta no próximo ciclo
+    // Mapa orderId -> status REAL na corretora (Filled / Cancelled / New ...).
+    // Distingue execução de cancelamento — crucial para não vender o que
+    // não foi comprado.
+    final statusReais = await _statusOrdensNaCorretora(exchange, symbol);
+    if (statusReais == null) return;   // erro de rede, tenta no próximo ciclo
 
-    final executadas = ordensOpen.where((o) {
+    for (final o in ordensOpen) {
       final oid = o['exchange_order_id']?.toString() ?? '';
-      return oid.isNotEmpty && !abertosNaCorretora.contains(oid);
-    }).toList();
-
-    if (executadas.isNotEmpty) {
-      debugPrint('GRID_MONITOR: ${executadas.length} execução(ões) em $symbol');
-      for (final o in executadas) {
+      if (oid.isEmpty) continue;
+      final st = statusReais[oid];
+      if (st == null) continue;          // ordem não apareceu no histórico ainda
+      final stl = st.toLowerCase();
+      if (stl == 'filled') {
+        debugPrint('GRID_MONITOR: $symbol ordem $oid FILLED -> agindo');
         await _processarExecucao(grid, o, token);
+      } else if (stl == 'cancelled' || stl == 'canceled' || stl == 'rejected') {
+        debugPrint('GRID_MONITOR: $symbol ordem $oid $st -> marcando cancelada (sem agir)');
+        await _marcarStatus(o['id']?.toString() ?? '', token, 'cancelled');
       }
+      // 'new', 'partiallyfilled', 'untriggered' etc: ainda aberta, ignora
     }
   }
 
@@ -245,6 +252,80 @@ class GridMonitor {
     return null;
   }
 
+  /// Retorna mapa orderId -> status combinando ordens ABERTAS (status 'New')
+  /// e o HISTÓRICO recente (Filled/Cancelled/...). null em caso de erro.
+  Future<Map<String, String>?> _statusOrdensNaCorretora(String exchange, String symbol) async {
+    final chaves = await _chaves(exchange);
+    if (chaves == null) return null;
+    final apiKey = chaves[0], secret = chaves[1];
+    try {
+      if (exchange == 'bybit') {
+        return await _bybitStatusMap(apiKey, secret, symbol);
+      } else if (exchange == 'binance') {
+        return await _binanceStatusMap(apiKey, secret, symbol);
+      }
+    } catch (e) {
+      debugPrint('GRID_MONITOR: erro status corretora: $e');
+    }
+    return null;
+  }
+
+  Future<Map<String, String>> _bybitStatusMap(String apiKey, String secret, String symbol) async {
+    final mapa = <String, String>{};
+    // 1) Ordens abertas (realtime) -> status 'New'/'PartiallyFilled'
+    final tsA = DateTime.now().millisecondsSinceEpoch.toString();
+    final qA = 'category=spot&symbol=$symbol';
+    final signA = _hmac(secret, '$tsA${apiKey}5000$qA');
+    final rA = await http.get(
+      Uri.parse('https://api.bybit.com/v5/order/realtime?$qA'),
+      headers: {
+        'X-BAPI-API-KEY': apiKey, 'X-BAPI-TIMESTAMP': tsA,
+        'X-BAPI-SIGN': signA, 'X-BAPI-RECV-WINDOW': '5000',
+      },
+    ).timeout(const Duration(seconds: 10));
+    for (final o in ((jsonDecode(rA.body)['result']?['list']) as List?) ?? []) {
+      final id = o['orderId']?.toString() ?? '';
+      final st = o['orderStatus']?.toString() ?? 'New';
+      if (id.isNotEmpty) mapa[id] = st;
+    }
+    // 2) Histórico recente -> Filled/Cancelled (últimas 50)
+    final tsH = DateTime.now().millisecondsSinceEpoch.toString();
+    final qH = 'category=spot&symbol=$symbol&limit=50';
+    final signH = _hmac(secret, '$tsH${apiKey}5000$qH');
+    final rH = await http.get(
+      Uri.parse('https://api.bybit.com/v5/order/history?$qH'),
+      headers: {
+        'X-BAPI-API-KEY': apiKey, 'X-BAPI-TIMESTAMP': tsH,
+        'X-BAPI-SIGN': signH, 'X-BAPI-RECV-WINDOW': '5000',
+      },
+    ).timeout(const Duration(seconds: 10));
+    for (final o in ((jsonDecode(rH.body)['result']?['list']) as List?) ?? []) {
+      final id = o['orderId']?.toString() ?? '';
+      final st = o['orderStatus']?.toString() ?? '';
+      // histórico tem prioridade (estado final). Só sobrescreve se não estiver aberta.
+      if (id.isNotEmpty && !mapa.containsKey(id)) mapa[id] = st;
+    }
+    return mapa;
+  }
+
+  Future<Map<String, String>> _binanceStatusMap(String apiKey, String secret, String symbol) async {
+    final mapa = <String, String>{};
+    // Binance: allOrders traz status de todas (NEW/FILLED/CANCELED)
+    final ts = DateTime.now().millisecondsSinceEpoch.toString();
+    final q = 'symbol=$symbol&limit=50&timestamp=$ts';
+    final sig = _hmac(secret, q);
+    final r = await http.get(
+      Uri.parse('https://api.binance.com/api/v3/allOrders?$q&signature=$sig'),
+      headers: {'X-MBX-APIKEY': apiKey},
+    ).timeout(const Duration(seconds: 10));
+    for (final o in (jsonDecode(r.body) as List?) ?? []) {
+      final id = o['orderId']?.toString() ?? '';
+      final st = o['status']?.toString() ?? '';
+      if (id.isNotEmpty) mapa[id] = st;
+    }
+    return mapa;
+  }
+
   Future<Set<String>> _bybitOrdensAbertas(String apiKey, String secret, String symbol) async {
     final ts = DateTime.now().millisecondsSinceEpoch.toString();
     final query = 'category=spot&symbol=$symbol';
@@ -284,6 +365,21 @@ class GridMonitor {
         Uri.parse('$_baseUrl/grids/orders/$orderDbId'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
         body: jsonEncode({'status': 'filled'}),
+      ).timeout(const Duration(seconds: 10));
+      return r.statusCode == 200;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /// Marca uma ordem com um status arbitrário (ex: 'cancelled').
+  Future<bool> _marcarStatus(String orderDbId, String token, String status) async {
+    if (orderDbId.isEmpty) return false;
+    try {
+      final r = await http.patch(
+        Uri.parse('$_baseUrl/grids/orders/$orderDbId'),
+        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
+        body: jsonEncode({'status': status}),
       ).timeout(const Duration(seconds: 10));
       return r.statusCode == 200;
     } catch (e) {
