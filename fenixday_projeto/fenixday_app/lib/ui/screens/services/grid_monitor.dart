@@ -25,10 +25,19 @@ class GridMonitor {
   GridMonitor._();
 
   void iniciar() {
-    if (_timer != null) return;            // já rodando
+    // Resiliente: cancela qualquer timer anterior e cria um novo,
+    // garantindo que um timer "morto" seja sempre substituído.
+    _timer?.cancel();
     debugPrint('GRID_MONITOR: iniciado (ciclo ${_intervalo.inSeconds}s)');
     _ciclo();                              // roda uma vez já
     _timer = Timer.periodic(_intervalo, (_) => _ciclo());
+  }
+
+  /// Dispara um ciclo imediato sob demanda (ex: app volta ao foco,
+  /// pull-to-refresh). Não interfere no timer periódico.
+  void dispararAgora() {
+    debugPrint('GRID_MONITOR: disparo manual');
+    _ciclo();
   }
 
   void parar() {
@@ -48,9 +57,14 @@ class GridMonitor {
       final grids = await _buscarGridsAtivos(token);
       if (grids.isEmpty) { _rodando = false; return; }
 
-      for (final grid in grids) {
-        await _verificarGrid(grid, token);
-      }
+      // Timeout global: nenhum ciclo pode travar o monitor para sempre.
+      await Future(() async {
+        for (final grid in grids) {
+          await _verificarGrid(grid, token);
+        }
+      }).timeout(const Duration(seconds: 45), onTimeout: () {
+        debugPrint('GRID_MONITOR: ciclo excedeu 45s, abortado');
+      });
     } catch (e) {
       debugPrint('GRID_MONITOR_ERR: $e');
     } finally {

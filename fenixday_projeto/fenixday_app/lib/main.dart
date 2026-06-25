@@ -193,7 +193,7 @@ class _MainShell extends ConsumerStatefulWidget {
   ConsumerState<_MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends ConsumerState<_MainShell> {
+class _MainShellState extends ConsumerState<_MainShell> with WidgetsBindingObserver {
   static const _tabs = [
     (icon: Icons.bar_chart_outlined,      activeIcon: Icons.bar_chart,            label: 'P&L',      route: '/dashboard'),
     (icon: Icons.grid_view_outlined,      activeIcon: Icons.grid_view,            label: 'Grids',    route: '/grids'),
@@ -207,11 +207,23 @@ class _MainShellState extends ConsumerState<_MainShell> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     GridMonitor.instance.iniciar();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Quando o app volta ao foco, garante que o monitor está vivo
+    // e dispara um ciclo imediato (evita ter que puxar a tela).
+    if (state == AppLifecycleState.resumed) {
+      GridMonitor.instance.iniciar();      // resiliente: recria timer se morto
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     GridMonitor.instance.parar();
     super.dispose();
   }
