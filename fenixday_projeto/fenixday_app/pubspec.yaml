@@ -36,6 +36,8 @@ dependencies:
   # HTTP + Cripto
   http: ^1.2.1
   crypto: ^3.0.3
+  # Foreground service (monitor com app fechado/celular travado)
+  flutter_foreground_task: ^8.10.0
 
   # Formatação
   intl: ^0.19.0

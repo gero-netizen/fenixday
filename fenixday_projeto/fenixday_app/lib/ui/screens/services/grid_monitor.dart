@@ -40,6 +40,12 @@ class GridMonitor {
     _ciclo();
   }
 
+  /// Executa UM ciclo e aguarda terminar. Usado pelo serviço de
+  /// background (foreground service), que chama isto periodicamente.
+  Future<void> executarCiclo() async {
+    await _ciclo();
+  }
+
   void parar() {
     _timer?.cancel();
     _timer = null;

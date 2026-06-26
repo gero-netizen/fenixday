@@ -21,7 +21,9 @@ import 'ui/screens/license_screen_v3.dart';
 import 'ui/screens/admin_screen_v2.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'ui/screens/services/grid_monitor.dart';
+import 'ui/screens/services/grid_monitor_task.dart';
 import 'ui/screens/settings/exchange_settings_screen.dart';
 import 'ui/screens/settings/vpn_settings_screen.dart';
 import 'ui/screens/simulator/simulator_screen.dart';
@@ -151,11 +153,57 @@ void main() async {
     statusBarIconBrightness: Brightness.light,
   ));
 
+  // Inicializa o canal de comunicação do foreground service
+  FlutterForegroundTask.initCommunicationPort();
+  _configurarForegroundService();
+
   runApp(
     const ProviderScope(
       child: FenixApp(),
     ),
   );
+}
+
+/// Configura o canal de notificação e opções do foreground service.
+void _configurarForegroundService() {
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'fenix_grid_monitor',
+      channelName: 'Monitor de Grids FênixDay',
+      channelDescription: 'Mantém o monitor de grids ativo em segundo plano.',
+      onlyAlertOnce: true,
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(),
+    foregroundTaskOptions: ForegroundTaskOptions(
+      eventAction: ForegroundTaskEventAction.repeat(20000), // 20s
+      autoRunOnBoot: false,
+      allowWakeLock: true,
+      allowWifiLock: true,
+    ),
+  );
+}
+
+/// Inicia o monitor em background (foreground service).
+/// Chamado quando há pelo menos um grid ativo.
+Future<void> iniciarMonitorBackground() async {
+  // Pede permissão de notificação (Android 13+) se necessário
+  final permission = await FlutterForegroundTask.checkNotificationPermission();
+  if (permission != NotificationPermission.granted) {
+    await FlutterForegroundTask.requestNotificationPermission();
+  }
+  if (await FlutterForegroundTask.isRunningService) return; // já rodando
+  await FlutterForegroundTask.startService(
+    notificationTitle: 'FênixDay — monitorando grids',
+    notificationText: 'Iniciando...',
+    callback: startGridMonitorTask,
+  );
+}
+
+/// Para o monitor em background.
+Future<void> pararMonitorBackground() async {
+  if (await FlutterForegroundTask.isRunningService) {
+    await FlutterForegroundTask.stopService();
+  }
 }
 
 // ── App Widget ────────────────────────────────────────────────────────────────
@@ -209,6 +257,8 @@ class _MainShellState extends ConsumerState<_MainShell> with WidgetsBindingObser
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     GridMonitor.instance.iniciar();
+    // Inicia o serviço de background (mantém o monitor vivo com app fechado)
+    iniciarMonitorBackground();
   }
 
   @override
