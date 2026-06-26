@@ -219,7 +219,8 @@ class GridMonitor {
         final taxas       = (precoVenda + precoCompra) * qty * 0.001; // ~0,1%/ponta
         final lucroLiq    = lucroBruto - taxas;
         final volume      = (precoVenda + precoCompra) * qty;
-        await _registrarCicloFechado(gridId, token, lucroLiq, volume);
+        await _registrarCicloFechado(gridId, token, lucroLiq, volume,
+            precoCompra: precoCompra, precoVenda: precoVenda, nivel: nivel);
         debugPrint('GRID_MONITOR: lucro do ciclo = \$${lucroLiq.toStringAsFixed(4)}');
       } catch (e) {
         debugPrint('GRID_MONITOR: erro ao recolocar BUY: $e (ordem fica open, retenta)');
@@ -419,12 +420,16 @@ class GridMonitor {
 
   /// Registra um ciclo fechado (lucro realizado) no backend.
   Future<void> _registrarCicloFechado(
-      String gridId, String token, double lucro, double volume) async {
+      String gridId, String token, double lucro, double volume,
+      {double precoCompra = 0, double precoVenda = 0, int nivel = 0}) async {
     try {
       await http.post(
         Uri.parse('$_baseUrl/grids/$gridId/cycle-closed'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'lucro': lucro, 'volume': volume}),
+        body: jsonEncode({
+          'lucro': lucro, 'volume': volume,
+          'preco_compra': precoCompra, 'preco_venda': precoVenda, 'nivel': nivel,
+        }),
       ).timeout(const Duration(seconds: 10));
     } catch (e) {
       debugPrint('GRID_MONITOR: erro ao registrar ciclo: $e');

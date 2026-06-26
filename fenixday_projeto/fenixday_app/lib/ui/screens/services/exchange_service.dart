@@ -726,25 +726,26 @@ class ExchangeService {
       if (cryptocomSnap.configured && cryptocomSnap.error == null) 'Crypto.com',
     ];
 
-    // P&L do dia
-    final today      = DateTime.now();
-    final startOfDay = DateTime(today.year, today.month, today.day);
-    final bySymbol   = <String, List<ExchangeOrder>>{};
-    for (final o in allOrders) {
-      bySymbol.putIfAbsent('${o.exchange}:${o.symbol}', () => []).add(o);
-    }
+    // P&L do dia: usa o lucro REAL dos ciclos do grid (backend),
+    // não o cálculo aproximado SELL-avgBuy que distorcia o resultado.
     double pnlHoje = 0;
     int    ciclos  = 0;
-    for (final orders in bySymbol.values) {
-      final buys  = orders.where((o) => o.side == 'BUY').toList();
-      final sells = orders.where((o) =>
-          o.side == 'SELL' && o.time.isAfter(startOfDay)).toList();
-      if (buys.isEmpty || sells.isEmpty) continue;
-      final avgBuy = buys.map((o) => o.price).reduce((a, b) => a + b) / buys.length;
-      for (final sell in sells) {
-        pnlHoje += (sell.price - avgBuy) * sell.executedQty;
-        ciclos++;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final token = prefs.getString('access_token') ?? '';
+      if (token.isNotEmpty) {
+        final rr = await http.get(
+          Uri.parse('https://fenixday.info/api/v1/grids/cycles/today'),
+          headers: {'Authorization': 'Bearer $token'},
+        ).timeout(const Duration(seconds: 10));
+        if (rr.statusCode == 200) {
+          final d = jsonDecode(rr.body);
+          pnlHoje = (d['lucro_hoje'] as num?)?.toDouble() ?? 0.0;
+          ciclos  = (d['ciclos_hoje'] as num?)?.toInt() ?? 0;
+        }
       }
+    } catch (e) {
+      // silencioso: se falhar, fica 0 (não quebra o dashboard)
     }
 
     // Lê modo real do storage
