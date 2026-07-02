@@ -162,6 +162,16 @@ class GridMonitor {
       // BUY executou -> criar SELL no par_price (nível acima)
       var sellPrice = parPrice;
       var sellQty   = qty;
+      // Se o alvo de venda ficou ABAIXO do mercado atual (ex: preço subiu
+      // desde a compra), a Bybit recusa a venda por proteção de banda.
+      // Nesse caso, ajusta a venda para logo abaixo do mercado — ainda com
+      // lucro sobre a compra, mas dentro da banda aceita pela corretora.
+      final mkt = await _precoMercado(exchange, symbol);
+      if (mkt > 0 && sellPrice < mkt) {
+        final ajustado = mkt * 0.999; // 0,1% abaixo do mercado (dentro da banda)
+        debugPrint('GRID_MONITOR: alvo SELL $sellPrice < mercado $mkt -> ajusta p/ $ajustado');
+        sellPrice = ajustado;
+      }
       if (tickSize > 0) {
         sellPrice = (sellPrice / tickSize).round() * tickSize;
         sellPrice = double.parse(sellPrice.toStringAsFixed(_decFromStep(tickSize)));
@@ -187,7 +197,15 @@ class GridMonitor {
         // SÓ AGORA marca a BUY como filled (venda criada com sucesso)
         await _marcarFilled(orderDbId, token);
       } catch (e) {
-        debugPrint('GRID_MONITOR: erro ao criar SELL: $e (ordem fica open, retenta)');
+        final msg = e.toString().toLowerCase();
+        if (msg.contains('insufficient balance')) {
+          // Não há saldo do ativo para vender (ordem dessincronizada/fantasma).
+          // Retentar não resolve — marca como 'sem_saldo' e para de tentar.
+          debugPrint('GRID_MONITOR: SELL sem saldo, marcando ordem $orderDbId como sem_saldo');
+          await _marcarStatus(orderDbId, token, 'sem_saldo');
+        } else {
+          debugPrint('GRID_MONITOR: erro ao criar SELL: $e (ordem fica open, retenta)');
+        }
       }
     } else if (side == 'SELL') {
       // SELL executou -> ciclo fechado! Recolocar BUY no par_price (nível abaixo)
@@ -453,6 +471,32 @@ class GridMonitor {
   }
 
   /// Busca tickSize e qtyStep do par.
+  /// Busca o preço de mercado atual do par (chamada pública, sem auth).
+  /// Retorna 0 se não conseguir (o chamador decide o fallback).
+  Future<double> _precoMercado(String exchange, String symbol) async {
+    try {
+      if (exchange.toLowerCase() == 'bybit') {
+        final r = await http.get(Uri.parse(
+          'https://api.bybit.com/v5/market/tickers?category=spot&symbol=$symbol',
+        )).timeout(const Duration(seconds: 8));
+        final j = jsonDecode(r.body);
+        final list = j['result']?['list'] as List?;
+        if (list != null && list.isNotEmpty) {
+          return double.tryParse('${list[0]['lastPrice']}') ?? 0;
+        }
+      } else if (exchange.toLowerCase() == 'binance') {
+        final r = await http.get(Uri.parse(
+          'https://api.binance.com/api/v3/ticker/price?symbol=$symbol',
+        )).timeout(const Duration(seconds: 8));
+        final j = jsonDecode(r.body);
+        return double.tryParse('${j['price']}') ?? 0;
+      }
+    } catch (e) {
+      debugPrint('GRID_MONITOR: falha ao buscar preço de mercado: $e');
+    }
+    return 0;
+  }
+
   Future<Map<String, double>> _precisaoPar(String exchange, String symbol) async {
     double tickSize = 0, qtyStep = 0;
     try {

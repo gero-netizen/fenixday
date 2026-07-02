@@ -6,6 +6,7 @@
 ///   • Riverpod (ProviderScope) como raiz
 ///   • Redirect automático para login se não autenticado
 
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -154,8 +155,11 @@ void main() async {
   ));
 
   // Inicializa o canal de comunicação do foreground service
-  FlutterForegroundTask.initCommunicationPort();
-  _configurarForegroundService();
+  // Foreground service só em mobile; no desktop o Timer.periodic basta.
+  if (Platform.isAndroid || Platform.isIOS) {
+    FlutterForegroundTask.initCommunicationPort();
+    _configurarForegroundService();
+  }
 
   runApp(
     const ProviderScope(
@@ -186,6 +190,9 @@ void _configurarForegroundService() {
 /// Inicia o monitor em background (foreground service).
 /// Chamado quando há pelo menos um grid ativo.
 Future<void> iniciarMonitorBackground() async {
+  // Foreground service só existe em Android/iOS. No desktop, o Timer.periodic
+  // do GridMonitor já basta (o SO não mata o app como o Android faz).
+  if (!(Platform.isAndroid || Platform.isIOS)) return;
   // Pede permissão de notificação (Android 13+) se necessário
   final permission = await FlutterForegroundTask.checkNotificationPermission();
   if (permission != NotificationPermission.granted) {
@@ -201,6 +208,7 @@ Future<void> iniciarMonitorBackground() async {
 
 /// Para o monitor em background.
 Future<void> pararMonitorBackground() async {
+  if (!(Platform.isAndroid || Platform.isIOS)) return;
   if (await FlutterForegroundTask.isRunningService) {
     await FlutterForegroundTask.stopService();
   }
