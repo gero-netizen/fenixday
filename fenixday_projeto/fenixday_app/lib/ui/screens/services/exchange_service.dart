@@ -132,7 +132,9 @@ class _BinanceService {
 
   Uri _signed(String path, [Map<String, String>? p]) {
     final ts     = DateTime.now().millisecondsSinceEpoch.toString();
-    final params = {'timestamp': ts, ...?p};
+    // recvWindow ampliado (10s) para tolerar pequeno desvio de relógio/latência,
+    // principalmente no desktop. Evita o erro -1021 da Binance.
+    final params = {'timestamp': ts, 'recvWindow': '10000', ...?p};
     final query  = params.entries.map((e) => '${e.key}=${e.value}').join('&');
     return Uri.parse('$_base$path?$query&signature=${_hmac(secret!, query)}');
   }
@@ -261,7 +263,7 @@ class _BybitService {
       headers: _headers(ts, queryString: qs),
     ).timeout(const Duration(seconds: 10));
     final body = jsonDecode(r.body);
-    if (body['retCode'] != 0) throw Exception('Bybit retCode:\${body["retCode"]} msg:\${body["retMsg"]} body:\${r.body.substring(0, r.body.length < 200 ? r.body.length : 200)}');
+    if (body['retCode'] != 0) throw Exception('Bybit retCode:${body["retCode"]} msg:${body["retMsg"]} body:${r.body.substring(0, r.body.length < 200 ? r.body.length : 200)}');
     final List coins = body['result']?['list']?[0]?['coin'] ?? [];
     return coins
         .map((c) => ExchangeBalance(
@@ -544,7 +546,7 @@ class _CryptoComService {
       body: jsonEncode(body),
     ).timeout(const Duration(seconds: 10));
     final data = jsonDecode(r.body);
-    if (data['code'] != 0) throw Exception('Crypto.com code:\${data["code"]} msg:\${data["message"]} body:\${r.body.length > 200 ? r.body.substring(0,200) : r.body}');
+    if (data['code'] != 0) throw Exception('Crypto.com code:${data["code"]} msg:${data["message"]} body:${r.body.length > 200 ? r.body.substring(0,200) : r.body}');
     final List accounts = data['result']?['accounts'] ?? [];
     final balances = <ExchangeBalance>[];
     for (final acc in accounts) {

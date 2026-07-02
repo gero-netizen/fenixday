@@ -628,6 +628,9 @@ class _GridCard extends ConsumerWidget {
           const SizedBox(width: 6),
           Text('${grid.niveis} níveis',
               style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
+          const SizedBox(width: 6),
+          Text('· ${_diasAberto(grid.createdAt)}',
+              style: const TextStyle(fontSize: 9, color: FenixColors.textMuted)),
         ]),
         const SizedBox(height: 10),
 
@@ -859,6 +862,14 @@ class _GridCard extends ConsumerWidget {
     if (p >= 1)    return p.toStringAsFixed(4);
     if (p >= 0.01) return p.toStringAsFixed(5);
     return p.toStringAsFixed(6);
+  }
+
+  /// Texto de há quantos dias o grid está aberto.
+  String _diasAberto(DateTime criado) {
+    final dias = DateTime.now().difference(criado).inDays;
+    if (dias <= 0) return 'hoje';
+    if (dias == 1) return '1 dia';
+    return '$dias dias';
   }
 }
 
