@@ -1,6 +1,7 @@
 /// FênixDay — Tela de Grids Ativos
 /// Integrado com API real: GET/POST/PUT/DELETE /api/v1/grids
 
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -185,6 +186,16 @@ class _GridsNotifier extends StateNotifier<AsyncValue<List<GridModel>>> {
     }
   }
 
+  /// Atualiza os grids SEM mostrar loading (não "pisca" a tela).
+  Future<void> refreshSilencioso() async {
+    try {
+      state = AsyncValue.data(await _api.fetchGrids());
+    } catch (e, st) {
+      // Mantém os dados atuais se a atualização falhar.
+      if (state is! AsyncData) state = AsyncValue.error(e, st);
+    }
+  }
+
   Future<void> createGrid(Map<String, dynamic> payload) async {
     await _api.createGrid(payload);
     await fetch();
@@ -213,11 +224,31 @@ final gridsProvider =
 
 // ── Tela principal ────────────────────────────────────────────────────────────
 
-class GridsScreen extends ConsumerWidget {
+class GridsScreen extends ConsumerStatefulWidget {
   const GridsScreen({super.key});
+  @override
+  ConsumerState<GridsScreen> createState() => _GridsScreenState();
+}
+
+class _GridsScreenState extends ConsumerState<GridsScreen> {
+  Timer? _autoRefresh;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  void initState() {
+    super.initState();
+    _autoRefresh = Timer.periodic(const Duration(seconds: 30), (_) {
+      ref.read(gridsProvider.notifier).refreshSilencioso();
+    });
+  }
+
+  @override
+  void dispose() {
+    _autoRefresh?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final gridsAsync = ref.watch(gridsProvider);
 
     return Scaffold(
