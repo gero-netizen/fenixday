@@ -3,6 +3,7 @@
 /// • Badge modo real/demo funcional com toggle
 /// • Saldo separado por corretora
 
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -65,6 +66,16 @@ class _ExchangeNotifier extends StateNotifier<AsyncValue<ExchangeDashboardData>>
 
   Future<void> fetch() async {
     state = const AsyncValue.loading();
+    await _carregar();
+  }
+
+  /// Atualiza os dados SEM mostrar o loading (não "pisca" a tela).
+  /// Usado pela atualização automática periódica.
+  Future<void> refreshSilencioso() async {
+    await _carregar();
+  }
+
+  Future<void> _carregar() async {
     try {
       final data = await _service.fetchAll();
       // Salvar saldo por exchange nas prefs para o grid config usar
@@ -74,7 +85,11 @@ class _ExchangeNotifier extends StateNotifier<AsyncValue<ExchangeDashboardData>>
         await prefs.setDouble('cached_usdt_${entry.key.toLowerCase()}', entry.value.totalUsdt);
       }
       state = AsyncValue.data(data);
-    } catch (e, st) { state = AsyncValue.error(e, st); }
+    } catch (e, st) {
+      // Só propaga erro se ainda não temos dados (primeira carga).
+      // Em refresh, mantém os dados atuais se a atualização falhar.
+      if (state is! AsyncData) state = AsyncValue.error(e, st);
+    }
   }
 }
 
@@ -136,11 +151,16 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
     with TickerProviderStateMixin {
   late TabController _tabController;
   final _tabs = ['Total', 'Binance', 'Bybit'];
+  Timer? _autoRefresh;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: _tabs.length, vsync: this);
+    // Atualizacao automatica a cada 30s (sem piscar a tela).
+    _autoRefresh = Timer.periodic(const Duration(seconds: 30), (_) {
+      ref.read(_exchangeProvider.notifier).refreshSilencioso();
+    });
   }
 
   @override
@@ -159,6 +179,7 @@ class _DashboardScreenV2State extends ConsumerState<DashboardScreenV2>
   }
 
   void dispose() {
+    _autoRefresh?.cancel();
     _tabController.dispose();
     super.dispose();
   }
