@@ -543,6 +543,12 @@ class GridMonitor {
         qty = double.parse(qty.toStringAsFixed(_decFromStep(qtyStep)));
       }
       if (qty <= 0) continue;
+      // Pula ordens abaixo do valor mínimo da corretora (~$5 na Bybit spot),
+      // evitando erro "Order value exceeded lower limit".
+      if (price * qty < 5.0) {
+        debugPrint('GRID_MONITOR: trailing - pulando nivel (valor ${(price * qty).toStringAsFixed(2)} < min)');
+        continue;
+      }
       try {
         final novoId = await _criarOrdem(exchange, apiKey, secret, symbol,
             'Buy', price, qty, tickSize, qtyStep);
