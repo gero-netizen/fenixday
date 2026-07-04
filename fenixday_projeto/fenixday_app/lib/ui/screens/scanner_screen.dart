@@ -74,10 +74,23 @@ class ScannerPair {
 // ── Serviço ───────────────────────────────────────────────────────────────────
 
 class _ScannerService {
-  static const _base = 'https://api.binance.com';
+  final String exchange;
+  _ScannerService({this.exchange = 'Binance'});
+
+  String get _base => exchange.toLowerCase() == 'bybit'
+      ? 'https://api.bybit.com'
+      : 'https://api.binance.com';
 
   Future<List<Map<String, dynamic>>> _fetchTickers() async {
-    final r = await http.get(Uri.parse('$_base/api/v3/ticker/24hr'))
+    if (exchange.toLowerCase() == 'bybit') {
+      return _fetchTickersBybit();
+    }
+    return _fetchTickersBinance();
+  }
+
+  // ── Binance: tickers 24h ────────────────────────────────────────
+  Future<List<Map<String, dynamic>>> _fetchTickersBinance() async {
+    final r = await http.get(Uri.parse('https://api.binance.com/api/v3/ticker/24hr'))
         .timeout(const Duration(seconds: 15));
     if (r.statusCode != 200) throw Exception('Erro ao buscar tickers');
     final List data = jsonDecode(r.body);
@@ -90,21 +103,67 @@ class _ScannerService {
           !sym.contains('BEAR') && !sym.contains('BULL') &&
           !_blacklist.contains(base) &&
           vol >= 20000000;
-    }).map((t) => t as Map<String, dynamic>).toList();
+    }).map((t) => <String, dynamic>{
+      'symbol': t['symbol'],
+      'lastPrice': t['lastPrice'],
+      'quoteVolume': t['quoteVolume'],
+      'priceChangePercent': t['priceChangePercent'],
+    }).toList();
   }
 
+  // ── Bybit: tickers spot (normalizado p/ o mesmo formato) ────────
+  Future<List<Map<String, dynamic>>> _fetchTickersBybit() async {
+    final r = await http.get(Uri.parse(
+      'https://api.bybit.com/v5/market/tickers?category=spot',
+    )).timeout(const Duration(seconds: 15));
+    if (r.statusCode != 200) throw Exception('Erro ao buscar tickers Bybit');
+    final j = jsonDecode(r.body);
+    final List list = j['result']?['list'] ?? [];
+    return list.where((t) {
+      final sym  = t['symbol'].toString();
+      final base = sym.replaceAll('USDT', '');
+      final vol  = double.tryParse(t['turnover24h']?.toString() ?? '0') ?? 0;
+      return sym.endsWith('USDT') &&
+          !sym.contains('DOWN') && !sym.contains('UP') &&
+          !sym.contains('BEAR') && !sym.contains('BULL') &&
+          !_blacklist.contains(base) &&
+          vol >= 20000000;
+    }).map((t) {
+      final pcnt = (double.tryParse(t['price24hPcnt']?.toString() ?? '0') ?? 0) * 100;
+      return <String, dynamic>{
+        'symbol': t['symbol'],
+        'lastPrice': t['lastPrice'],
+        'quoteVolume': t['turnover24h'],
+        'priceChangePercent': pcnt.toString(),
+      };
+    }).toList();
+  }
   Future<Map<String, dynamic>?> _analyzeSymbol(String symbol) async {
     try {
-      final r = await http.get(
-        Uri.parse('$_base/api/v3/klines?symbol=$symbol&interval=1h&limit=300'),
-      ).timeout(const Duration(seconds: 8));
-      if (r.statusCode != 200) return null;
-      final List klines = jsonDecode(r.body);
-      if (klines.length < 220) return null;
-
-      final highs  = klines.map((k) => double.tryParse(k[2].toString()) ?? 0.0).toList();
-      final lows   = klines.map((k) => double.tryParse(k[3].toString()) ?? 0.0).toList();
-      final closes = klines.map((k) => double.tryParse(k[4].toString()) ?? 0.0).toList();
+      List<double> highs, lows, closes;
+      if (exchange.toLowerCase() == 'bybit') {
+        final r = await http.get(Uri.parse(
+          'https://api.bybit.com/v5/market/kline?category=spot&symbol=$symbol&interval=60&limit=300',
+        )).timeout(const Duration(seconds: 8));
+        if (r.statusCode != 200) return null;
+        final j = jsonDecode(r.body);
+        final List kl = j['result']?['list'] ?? [];
+        if (kl.length < 220) return null;
+        final klChrono = kl.reversed.toList();
+        highs  = klChrono.map((k) => double.tryParse(k[2].toString()) ?? 0.0).toList();
+        lows   = klChrono.map((k) => double.tryParse(k[3].toString()) ?? 0.0).toList();
+        closes = klChrono.map((k) => double.tryParse(k[4].toString()) ?? 0.0).toList();
+      } else {
+        final r = await http.get(
+          Uri.parse('https://api.binance.com/api/v3/klines?symbol=$symbol&interval=1h&limit=300'),
+        ).timeout(const Duration(seconds: 8));
+        if (r.statusCode != 200) return null;
+        final List klines = jsonDecode(r.body);
+        if (klines.length < 220) return null;
+        highs  = klines.map((k) => double.tryParse(k[2].toString()) ?? 0.0).toList();
+        lows   = klines.map((k) => double.tryParse(k[3].toString()) ?? 0.0).toList();
+        closes = klines.map((k) => double.tryParse(k[4].toString()) ?? 0.0).toList();
+      }
       final n      = closes.length;
       final price  = closes.last;
       if (price <= 0) return null;
@@ -277,12 +336,17 @@ class _ScannerService {
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 class _ScannerNotifier extends StateNotifier<AsyncValue<List<ScannerPair>>> {
-  final _service = _ScannerService();
-  _ScannerNotifier() : super(const AsyncValue.loading()) { scan(); }
-  Future<void> scan() async {
+  // Começa vazio: não varre até o usuário escolher a corretora e clicar em buscar.
+  _ScannerNotifier() : super(const AsyncValue.data([]));
+
+  bool jaBuscou = false;
+
+  Future<void> scan(String exchange) async {
+    jaBuscou = true;
     state = const AsyncValue.loading();
     try {
-      state = AsyncValue.data(await _service.scan());
+      final service = _ScannerService(exchange: exchange);
+      state = AsyncValue.data(await service.scan());
     } catch (e, st) { state = AsyncValue.error(e, st); }
   }
 }
@@ -294,11 +358,18 @@ final _scannerProvider =
 
 // ── Tela ──────────────────────────────────────────────────────────────────────
 
-class ScannerScreen extends ConsumerWidget {
+class ScannerScreen extends ConsumerStatefulWidget {
   const ScannerScreen({super.key});
+  @override
+  ConsumerState<ScannerScreen> createState() => _ScannerScreenState();
+}
+
+class _ScannerScreenState extends ConsumerState<ScannerScreen> {
+  String _exchange = 'Binance';
+  static const _exchanges = ['Binance', 'Bybit'];
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final scannerAsync = ref.watch(_scannerProvider);
 
     return Scaffold(
@@ -329,12 +400,12 @@ class ScannerScreen extends ConsumerWidget {
                           strokeWidth: 2, color: FenixColors.yellow)),
                   error: (_, __) => IconButton(
                     icon: const Icon(Icons.refresh, color: FenixColors.yellow),
-                    onPressed: () => ref.read(_scannerProvider.notifier).scan(),
+                    onPressed: () => ref.read(_scannerProvider.notifier).scan(_exchange),
                   ),
                   data: (_) => IconButton(
                     icon: const Icon(Icons.refresh,
                         color: FenixColors.yellow, size: 20),
-                    onPressed: () => ref.read(_scannerProvider.notifier).scan(),
+                    onPressed: () => ref.read(_scannerProvider.notifier).scan(_exchange),
                   ),
                 ),
               ]),
@@ -348,6 +419,50 @@ class ScannerScreen extends ConsumerWidget {
                 _FilterChip(label: 'ADX < 25',     color: FenixColors.green),
                 _FilterChip(label: 'MA200 flat',   color: FenixColors.purple),
                 _FilterChip(label: 'ATR > 0,15%', color: FenixColors.yellow),
+              ]),
+            ),
+
+            // ── Seletor de corretora + botão Buscar ──────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+              child: Row(children: [
+                const Text('Corretora:', style: TextStyle(fontSize: 11,
+                    color: FenixColors.textMuted)),
+                const SizedBox(width: 8),
+                ..._exchanges.map((ex) {
+                  final sel = _exchange == ex;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: GestureDetector(
+                      onTap: () => setState(() => _exchange = ex),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: sel ? FenixColors.yellow : Colors.transparent,
+                          border: Border.all(
+                              color: sel ? FenixColors.yellow : FenixColors.border),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(ex, style: TextStyle(fontSize: 11,
+                            fontWeight: sel ? FontWeight.w600 : FontWeight.w400,
+                            color: sel ? const Color(0xFF1A0A00) : FenixColors.textPrimary)),
+                      ),
+                    ),
+                  );
+                }),
+                const Spacer(),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: FenixColors.green,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8)),
+                  ),
+                  icon: const Icon(Icons.search, size: 16),
+                  label: Text('Buscar na $_exchange'),
+                  onPressed: () =>
+                      ref.read(_scannerProvider.notifier).scan(_exchange),
+                ),
               ]),
             ),
 
@@ -385,7 +500,7 @@ class ScannerScreen extends ConsumerWidget {
                       icon: const Icon(Icons.refresh, size: 16),
                       label: const Text('Tentar novamente'),
                       onPressed: () =>
-                          ref.read(_scannerProvider.notifier).scan(),
+                          ref.read(_scannerProvider.notifier).scan(_exchange),
                     ),
                   ]),
                 ),
@@ -404,7 +519,7 @@ class ScannerScreen extends ConsumerWidget {
                       )
                     : RefreshIndicator(
                         onRefresh: () =>
-                            ref.read(_scannerProvider.notifier).scan(),
+                            ref.read(_scannerProvider.notifier).scan(_exchange),
                         color: FenixColors.yellow,
                         child: ListView.separated(
                           padding:
@@ -413,7 +528,7 @@ class ScannerScreen extends ConsumerWidget {
                           separatorBuilder: (_, __) =>
                               const SizedBox(height: 8),
                           itemBuilder: (ctx, i) =>
-                              _PairCard(pair: pairs[i], rank: i + 1),
+                              _PairCard(pair: pairs[i], rank: i + 1, exchange: _exchange),
                         ),
                       ),
               ),
@@ -430,7 +545,8 @@ class ScannerScreen extends ConsumerWidget {
 class _PairCard extends StatefulWidget {
   final ScannerPair pair;
   final int rank;
-  const _PairCard({required this.pair, required this.rank});
+  final String exchange;
+  const _PairCard({required this.pair, required this.rank, this.exchange = 'Binance'});
   @override
   State<_PairCard> createState() => _PairCardState();
 }
@@ -620,7 +736,7 @@ class _PairCardState extends State<_PairCard> {
     // Salvar params nas prefs para GridConfig ler no initState
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('grid_init_symbol',   p.symbol);
-    await prefs.setString('grid_init_exchange',  'Binance');
+    await prefs.setString('grid_init_exchange',  widget.exchange);
     await prefs.setDouble('grid_init_upper',     p.bbUpper);
     await prefs.setDouble('grid_init_lower',     p.bbLower);
     await prefs.setInt   ('grid_init_grids',     p.grid.niveis);

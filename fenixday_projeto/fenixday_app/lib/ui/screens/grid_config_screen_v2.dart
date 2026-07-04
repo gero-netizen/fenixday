@@ -42,8 +42,31 @@ const _kExchanges = ['Binance', 'Bybit', 'OKX', 'Bitget', 'MEXC'];
 final _candlesProvider = FutureProvider.family<List<CandleData>, String>((ref, key) async {
   final parts    = key.split('|');
   final symbol   = parts[0];
-  final interval = parts[1];
+  final tf       = parts[1];
+  final exchange = parts.length > 2 ? parts[2] : 'Binance';
   try {
+    if (exchange.toLowerCase() == 'bybit') {
+      const mapTf = {'15m': '15', '1h': '60', '4h': '240', '1D': 'D'};
+      final interval = mapTf[tf] ?? '60';
+      final r = await http.get(Uri.parse(
+        'https://api.bybit.com/v5/market/kline?category=spot&symbol=$symbol&interval=$interval&limit=80',
+      )).timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200) return _generateMockCandles();
+      final j = jsonDecode(r.body);
+      final List kl = j['result']?['list'] ?? [];
+      if (kl.isEmpty) return _generateMockCandles();
+      final chrono = kl.reversed.toList();
+      return chrono.map((k) => CandleData(
+        time:   DateTime.fromMillisecondsSinceEpoch(int.parse(k[0].toString())),
+        open:   double.parse(k[1].toString()),
+        high:   double.parse(k[2].toString()),
+        low:    double.parse(k[3].toString()),
+        close:  double.parse(k[4].toString()),
+        volume: double.parse(k[5].toString()),
+      )).toList();
+    }
+    const mapTf = {'15m': '15m', '1h': '1h', '4h': '4h', '1D': '1d'};
+    final interval = mapTf[tf] ?? '1h';
     final r = await http.get(Uri.parse(
       'https://api.binance.com/api/v3/klines?symbol=$symbol&interval=$interval&limit=80',
     )).timeout(const Duration(seconds: 10));
@@ -1758,6 +1781,9 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
         'espacamento_pct':    widget.params.currentMargin,
         'margem_liquida_pct': widget.params.currentMargin,
         'modo_real':          modoReal,
+        'trailing_up':        widget.params.trailingUp,
+        'trailing_down':      widget.params.trailingDown,
+        'max_trailing':       5,
       };
       final r = await http.post(
         Uri.parse('https://fenixday.info/api/v1/grids'),
