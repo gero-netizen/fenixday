@@ -163,7 +163,10 @@ class GridMonitor {
     if (side == 'BUY') {
       // BUY executou -> criar SELL no par_price (nível acima)
       var sellPrice = parPrice;
-      var sellQty   = qty;
+      // Desconta a taxa de trading da quantidade: ao comprar, a corretora
+      // cobra a taxa no próprio ativo (ex: Bybit ~0.1%), então recebemos
+      // menos do que o qty registrado. Vender 99.85% evita "Insufficient balance".
+      var sellQty   = qty * 0.9985;
       // Se o alvo de venda ficou ABAIXO do mercado atual (ex: preço subiu
       // desde a compra), a Bybit recusa a venda por proteção de banda.
       // Nesse caso, ajusta a venda para logo abaixo do mercado — ainda com
