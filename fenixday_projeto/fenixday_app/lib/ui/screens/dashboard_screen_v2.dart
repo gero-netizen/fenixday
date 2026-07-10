@@ -466,9 +466,12 @@ class _TabContent extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final fmt              = NumberFormat('#,##0.00', 'pt_BR');
     final gridSummaryAsync = ref.watch(_gridSummaryProvider);
+    // "Saldo livre" = USDT realmente disponível (free), sem o que está
+    // travado em ordens de compra abertas. O USDT travado + os ativos
+    // compõem o "Em ativos", mantendo o patrimônio total correto.
     final usdtBal = _balances
         .where((b) => b.asset == 'USDT')
-        .fold(0.0, (s, b) => s + b.total);
+        .fold(0.0, (s, b) => s + b.free);
     final assetsVal = _totalUsdt - usdtBal;
     return RefreshIndicator(
       onRefresh: () async {

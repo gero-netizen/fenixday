@@ -266,12 +266,23 @@ class _BybitService {
     if (body['retCode'] != 0) throw Exception('Bybit retCode:${body["retCode"]} msg:${body["retMsg"]} body:${r.body.substring(0, r.body.length < 200 ? r.body.length : 200)}');
     final List coins = body['result']?['list']?[0]?['coin'] ?? [];
     return coins
-        .map((c) => ExchangeBalance(
-              exchange: 'Bybit',
-              asset:    c['coin'],
-              free:     double.tryParse((c['walletBalance'] ?? c['availableToWithdraw'] ?? '0').toString()) ?? 0,
-              locked:   double.tryParse(c['locked'].toString()) ?? 0,
-            ))
+        .map((c) {
+          // Bybit: walletBalance JÁ é o total da moeda (livre + travado).
+          // Para não contar em dobro, free = disponível e locked = travado,
+          // de modo que free + locked = walletBalance.
+          final wallet = double.tryParse((c['walletBalance'] ?? '0').toString()) ?? 0;
+          final locked = double.tryParse((c['locked'] ?? '0').toString()) ?? 0;
+          var free = double.tryParse((c['availableToWithdraw'] ?? '0').toString()) ?? 0;
+          // Se availableToWithdraw não vier, deriva do total - travado.
+          if (free <= 0 && wallet > 0) free = wallet - locked;
+          if (free < 0) free = 0;
+          return ExchangeBalance(
+            exchange: 'Bybit',
+            asset:    c['coin'],
+            free:     free,
+            locked:   locked,
+          );
+        })
         .where((b) => b.total > 0.000001)
         .toList();
   }
