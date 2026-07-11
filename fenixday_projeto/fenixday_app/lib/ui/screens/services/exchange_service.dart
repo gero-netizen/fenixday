@@ -49,6 +49,7 @@ class ExchangeSnapshot {
   final String name;
   final List<ExchangeBalance> balances;
   final double totalUsdt;
+  final double futuresUsdt;
   final List<ExchangeOrder> orders;
   final Map<String, double> prices;
   final String? error;
@@ -59,6 +60,7 @@ class ExchangeSnapshot {
     required this.name,
     required this.balances,
     required this.totalUsdt,
+    this.futuresUsdt = 0,
     required this.orders,
     required this.prices,
     this.error,
@@ -72,6 +74,7 @@ class ExchangeSnapshot {
 class ExchangeDashboardData {
   final List<ExchangeBalance> balances;
   final double totalUsdtValue;
+  final double futuresUsdtValue; // colateral em futuros (fora do bot spot)
   final List<ExchangeOrder> recentOrders;
   final Map<String, double> prices;
   final double realizedPnlHoje;
@@ -85,6 +88,7 @@ class ExchangeDashboardData {
   const ExchangeDashboardData({
     required this.balances,
     required this.totalUsdtValue,
+    this.futuresUsdtValue = 0,
     required this.recentOrders,
     required this.prices,
     required this.realizedPnlHoje,
@@ -100,7 +104,7 @@ class ExchangeDashboardData {
   bool get hasData  => balances.isNotEmpty;
 
   static ExchangeDashboardData empty() => ExchangeDashboardData(
-    balances: [], totalUsdtValue: 0, recentOrders: [],
+    balances: [], totalUsdtValue: 0, futuresUsdtValue: 0, recentOrders: [],
     prices: {}, realizedPnlHoje: 0, ciclosFechadosHoje: 0,
     activeExchanges: [], fetchedAt: DateTime.now(), errors: {},
     snapshots: {}, modoReal: false,
@@ -237,6 +241,7 @@ class _BybitService {
   static const _testnetUrl = 'https://api-testnet.bybit.com';
 
   String? apiKey, secret;
+  double lastOrderIM = 0; // margem reservada por ordens de futuros pendentes
   bool testnet = false, configured = false;
 
   Future<void> load() async {
@@ -265,16 +270,19 @@ class _BybitService {
     final body = jsonDecode(r.body);
     if (body['retCode'] != 0) throw Exception('Bybit retCode:${body["retCode"]} msg:${body["retMsg"]} body:${r.body.substring(0, r.body.length < 200 ? r.body.length : 200)}');
     final List coins = body['result']?['list']?[0]?['coin'] ?? [];
+    lastOrderIM = 0; // reseta a cada fetch
     return coins
         .map((c) {
-          // Bybit: walletBalance JÁ é o total da moeda (livre + travado).
-          // Para não contar em dobro, free = disponível e locked = travado,
-          // de modo que free + locked = walletBalance.
-          final wallet = double.tryParse((c['walletBalance'] ?? '0').toString()) ?? 0;
-          final locked = double.tryParse((c['locked'] ?? '0').toString()) ?? 0;
+          // Bybit Unified: walletBalance JÁ é o total da moeda (livre + travado).
+          final wallet  = double.tryParse((c['walletBalance'] ?? '0').toString()) ?? 0;
+          final locked  = double.tryParse((c['locked'] ?? '0').toString()) ?? 0;
+          // totalOrderIM = margem reservada por ORDENS de futuros pendentes.
+          // Guardamos para exibir no card de futuros e descontamos do "livre"
+          // do USDT para o disponível bater com o que a corretora mostra.
+          final orderIM = double.tryParse((c['totalOrderIM'] ?? '0').toString()) ?? 0;
+          lastOrderIM += orderIM;
           var free = double.tryParse((c['availableToWithdraw'] ?? '0').toString()) ?? 0;
-          // Se availableToWithdraw não vier, deriva do total - travado.
-          if (free <= 0 && wallet > 0) free = wallet - locked;
+          if (free <= 0 && wallet > 0) free = wallet - locked - orderIM;
           if (free < 0) free = 0;
           return ExchangeBalance(
             exchange: 'Bybit',
@@ -335,6 +343,33 @@ class _BybitService {
     return all;
   }
 
+  /// Valor total imobilizado em posições de FUTUROS (linear/USDT perp).
+  /// Retorna margem inicial das posições + PnL não realizado.
+  /// FênixDay é bot de SPOT: este valor é rastreado separado, nunca somado
+  /// ao patrimônio spot.
+  Future<double> fetchFuturesValue() async {
+    try {
+      final ts = DateTime.now().millisecondsSinceEpoch.toString();
+      final qs = 'category=linear&settleCoin=USDT';
+      final r  = await http.get(
+        Uri.parse('$_base/v5/position/list?$qs'),
+        headers: _headers(ts, queryString: qs),
+      ).timeout(const Duration(seconds: 10));
+      final body = jsonDecode(r.body);
+      if (body['retCode'] != 0) return 0;
+      final List positions = body['result']?['list'] ?? [];
+      double futuros = 0;
+      for (final pos in positions) {
+        final im  = double.tryParse((pos['positionIM'] ?? '0').toString()) ?? 0;
+        final pnl = double.tryParse((pos['unrealisedPnl'] ?? '0').toString()) ?? 0;
+        futuros += im + pnl;
+      }
+      return futuros;
+    } catch (_) {
+      return 0;
+    }
+  }
+
   Future<ExchangeSnapshot> fetchSnapshot() async {
     await load();
     if (!configured) {
@@ -346,6 +381,8 @@ class _BybitService {
     }
     try {
       final balances = await fetchBalances();
+      // Colateral preso em posições de futuros (linear USDT perp).
+      final futuros  = await fetchFuturesValue();
       final nonUsdt  = balances.where((b) => b.asset != 'USDT').toList();
       final usdtBal  = balances.where((b) => b.asset == 'USDT').fold(0.0, (s, b) => s + b.total);
       final symbols  = nonUsdt.map((b) => '${b.asset}USDT').toList();
@@ -354,9 +391,17 @@ class _BybitService {
       for (final b in nonUsdt) {
         total += b.total * (prices['${b.asset}USDT'] ?? 0);
       }
+      // O 'free' do USDT já descontou lastOrderIM (margem de ordens pendentes),
+      // então 'total' NÃO contém mais os orderIM. Subtraímos só a margem de
+      // POSIÇÕES abertas (futuros) para isolar o patrimônio spot.
+      double spotTotal = total - futuros;
+      if (spotTotal < 0) spotTotal = 0;
+      // Card de futuros = margem de posições abertas + margem de ordens pendentes.
+      final futurosTotal = futuros + lastOrderIM;
       final orders = await fetchOrders(symbols);
       return ExchangeSnapshot(
-        name: 'Bybit', balances: balances, totalUsdt: total,
+        name: 'Bybit', balances: balances, totalUsdt: spotTotal,
+        futuresUsdt: futurosTotal,
         orders: orders, prices: prices, error: null,
         configured: true, isTestnet: testnet,
       );
@@ -725,6 +770,8 @@ class ExchangeService {
 
     final totalUsdt = binanceSnap.totalUsdt + bybitSnap.totalUsdt +
                       okxSnap.totalUsdt + cryptocomSnap.totalUsdt;
+    final totalFuturos = binanceSnap.futuresUsdt + bybitSnap.futuresUsdt +
+                      okxSnap.futuresUsdt + cryptocomSnap.futuresUsdt;
 
     final errors = <String, String?>{};
     if (binanceSnap.error != null)   errors['Binance']    = binanceSnap.error;
@@ -768,6 +815,7 @@ class ExchangeService {
     return ExchangeDashboardData(
       balances:           allBalances,
       totalUsdtValue:     totalUsdt,
+      futuresUsdtValue:   totalFuturos,
       recentOrders:       allOrders.take(20).toList(),
       prices:             allPrices,
       realizedPnlHoje:    pnlHoje,

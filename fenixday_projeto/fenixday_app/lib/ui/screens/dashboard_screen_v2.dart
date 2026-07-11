@@ -457,6 +457,9 @@ class _TabContent extends ConsumerWidget {
   double get _totalUsdt => exchangeFilter == null
       ? data.totalUsdtValue
       : data.snapshots[exchangeFilter]?.totalUsdt ?? 0;
+  double get _futurosUsdt => exchangeFilter == null
+      ? data.futuresUsdtValue
+      : data.snapshots[exchangeFilter]?.futuresUsdt ?? 0;
 
   Map<String, double> get _prices => exchangeFilter == null
       ? data.prices
@@ -466,13 +469,20 @@ class _TabContent extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final fmt              = NumberFormat('#,##0.00', 'pt_BR');
     final gridSummaryAsync = ref.watch(_gridSummaryProvider);
-    // "Saldo livre" = USDT realmente disponível (free), sem o que está
-    // travado em ordens de compra abertas. O USDT travado + os ativos
-    // compõem o "Em ativos", mantendo o patrimônio total correto.
+    // Separação correta do patrimônio spot:
+    //  - USDT disponível  = USDT livre (free)
+    //  - USDT em ordens   = USDT travado em ordens de compra abertas (locked)
+    //  - Em ativos        = SÓ os não-USDT a preço de mercado (o que flutua)
+    // O USDT travado NÃO é "ativo": é dinheiro seu aguardando execução.
     final usdtBal = _balances
         .where((b) => b.asset == 'USDT')
         .fold(0.0, (s, b) => s + b.free);
-    final assetsVal = _totalUsdt - usdtBal;
+    final usdtLocked = _balances
+        .where((b) => b.asset == 'USDT')
+        .fold(0.0, (s, b) => s + b.locked);
+    final assetsVal = _balances
+        .where((b) => b.asset != 'USDT')
+        .fold(0.0, (s, b) => s + b.total * (_prices['${b.asset}USDT'] ?? 0));
     return RefreshIndicator(
       onRefresh: () async {
         ref.read(_exchangeProvider.notifier).fetch();
@@ -617,9 +627,52 @@ class _TabContent extends ConsumerWidget {
                     sub: '${data.ciclosFechadosHoje} ciclos',
                   )),
                 ]),
+                // USDT travado em ordens de compra abertas (spot).
+                if (usdtLocked > 0.01) const SizedBox(height: 10),
+                if (usdtLocked > 0.01) const Divider(height: 1, thickness: .5, color: FenixColors.border),
+                if (usdtLocked > 0.01) const SizedBox(height: 10),
+                if (usdtLocked > 0.01) Row(children: [
+                  const Icon(Icons.lock_clock_outlined, size: 16, color: FenixColors.textMuted),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Text('USDT em ordens abertas',
+                      style: TextStyle(fontSize: 12, color: FenixColors.textMuted))),
+                  Text('\$${fmt.format(usdtLocked)}',
+                      style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 13,
+                          fontWeight: FontWeight.w500, color: FenixColors.textPrimary)),
+                ]),
               ]),
             ),
             const SizedBox(height: 14),
+            // ── Aviso: colateral em FUTUROS (fora do escopo do bot spot) ──
+            if (_futurosUsdt > 0.01) const SizedBox(height: 14),
+            if (_futurosUsdt > 0.01) Container(
+              padding: const EdgeInsets.all(14),
+              decoration: _cardDeco(topColor: FenixColors.orange),
+              child: Row(children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: FenixColors.orange.withOpacity(.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.warning_amber_rounded,
+                      color: FenixColors.orange, size: 22),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('\$${fmt.format(_futurosUsdt)}',
+                      style: const TextStyle(fontFamily: 'RobotoMono', fontSize: 20,
+                          fontWeight: FontWeight.w500, color: FenixColors.orange)),
+                  const SizedBox(height: 2),
+                  const Text('Em futuros / derivativos',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                          color: FenixColors.textPrimary)),
+                  const SizedBox(height: 2),
+                  const Text('Fora do bot spot — não entra no patrimônio de operação',
+                      style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
+                ])),
+              ]),
+            ),
             if (data.ciclosFechadosHoje > 0) _SectionTitle('Lucro de grid — ciclos fechados hoje'),
             if (data.ciclosFechadosHoje > 0) const SizedBox(height: 6),
             if (data.ciclosFechadosHoje > 0) Container(
