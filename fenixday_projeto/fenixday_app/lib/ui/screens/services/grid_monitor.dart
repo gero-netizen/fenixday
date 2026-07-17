@@ -475,53 +475,55 @@ class GridMonitor {
     return [apiKey, secret];
   }
 
-  /// Busca tickSize e qtyStep do par.
-  /// Busca o preço de mercado atual do par (chamada pública, sem auth).
-  /// Retorna 0 se não conseguir (o chamador decide o fallback).
-  /// Verifica se o preço saiu do range do grid e, se o trailing estiver
-  /// habilitado, desloca o range (versão SEGURA: só ADICIONA ordens no novo
-  /// range, nunca cancela as existentes). Retorna true se deslocou.
+  /// Verifica se o preço saiu do range do grid. Trailing UP: quando o preço
+  /// passa do topo, ADICIONA novos níveis ACIMA do limite_superior (mantendo
+  /// os de baixo intactos), com o mesmo espaçamento original. Para ao atingir
+  /// 2x o capital inicial (teto de segurança) ou max_trailing. DOWN desativado.
   Future<bool> _verificarTrailing(
       Map<String, dynamic> grid, String token) async {
-    final trailingUp   = grid['trailing_up'] == true;
-    final trailingDown = grid['trailing_down'] == true;
-    if (!trailingUp && !trailingDown) return false;
+    final trailingUp = grid['trailing_up'] == true;
+    if (!trailingUp) return false;  // DOWN desativado por ora
 
     final gridId   = grid['id']?.toString() ?? '';
     final symbol   = grid['symbol']?.toString() ?? '';
     final exchange = grid['exchange']?.toString() ?? '';
-    final sup   = (grid['limite_superior'] as num?)?.toDouble() ?? 0;
-    final inf   = (grid['limite_inferior'] as num?)?.toDouble() ?? 0;
-    final niveis = (grid['niveis'] as num?)?.toInt() ?? 0;
-    final count  = (grid['trailing_count'] as num?)?.toInt() ?? 0;
-    final maxT   = (grid['max_trailing'] as num?)?.toInt() ?? 5;
+    final sup     = (grid['limite_superior'] as num?)?.toDouble() ?? 0;
+    final inf     = (grid['limite_inferior'] as num?)?.toDouble() ?? 0;
+    final niveis  = (grid['niveis'] as num?)?.toInt() ?? 0;
+    final count   = (grid['trailing_count'] as num?)?.toInt() ?? 0;
+    final maxT    = (grid['max_trailing'] as num?)?.toInt() ?? 5;
     final capital = (grid['capital_usdt'] as num?)?.toDouble() ?? 0;
-    if (sup <= inf || niveis < 2 || gridId.isEmpty) return false;
+    if (sup <= inf || niveis < 2 || gridId.isEmpty || capital <= 0) return false;
 
-    final mkt = await _precoMercado(exchange, symbol);
-    if (mkt <= 0) return false;
-
-    final largura = sup - inf;
-    double novoSup, novoInf;
-    String direcao;
-
-    if (trailingUp && mkt > sup) {
-      novoSup = mkt + largura * 0.1;
-      novoInf = novoSup - largura;
-      direcao = 'UP';
-    } else if (trailingDown && mkt < inf) {
-      if (count >= maxT) {
-        debugPrint('GRID_MONITOR: trailing DOWN bloqueado ($symbol) - atingiu max_trailing ($maxT)');
-        return false;
-      }
-      novoInf = mkt - largura * 0.1;
-      novoSup = novoInf + largura;
-      direcao = 'DOWN';
-    } else {
+    if (count >= maxT) {
+      debugPrint('GRID_MONITOR: trailing UP bloqueado ($symbol) - max_trailing ($maxT) atingido');
       return false;
     }
 
-    debugPrint('GRID_MONITOR: TRAILING $direcao $symbol mkt=$mkt range=[$inf,$sup] -> [$novoInf,$novoSup]');
+    final mkt = await _precoMercado(exchange, symbol);
+    if (mkt <= 0) return false;
+    if (mkt <= sup) return false;  // preço ainda dentro/abaixo do topo
+
+    final espac = (sup - inf) / (niveis - 1);
+    if (espac <= 0) return false;
+
+    // Capital JÁ alocado = soma (price*qty) das ordens abertas do grid.
+    final ordensOpen = await _buscarOrdensOpen(gridId, token);
+    double capitalAlocado = 0;
+    for (final o in ordensOpen) {
+      final p = (o['price'] as num?)?.toDouble() ?? 0;
+      final q = (o['qty'] as num?)?.toDouble() ?? 0;
+      capitalAlocado += p * q;
+    }
+    final teto = capital * 2.0;  // regra: no máximo dobrar o capital inicial
+    if (capitalAlocado >= teto) {
+      debugPrint('GRID_MONITOR: trailing UP ($symbol) - teto 2x atingido '
+          '(alocado=${capitalAlocado.toStringAsFixed(2)} >= teto=${teto.toStringAsFixed(2)})');
+      return false;
+    }
+
+    debugPrint('GRID_MONITOR: TRAILING UP $symbol mkt=$mkt topo=$sup '
+        'alocado=${capitalAlocado.toStringAsFixed(2)}/teto=${teto.toStringAsFixed(2)} - avaliando niveis a adicionar');
 
     final prec = await _precisaoPar(exchange, symbol);
     final tickSize = prec['tickSize'] ?? 0;
@@ -530,12 +532,14 @@ class GridMonitor {
     if (chaves == null) return false;
     final apiKey = chaves[0], secret = chaves[1];
 
-    final step = (novoSup - novoInf) / (niveis - 1);
     final capPorNivel = capital / niveis;
+    double novoNivel = sup + espac;
+    double novoTopo = sup;
     int criadas = 0;
-    for (int i = 0; i < niveis; i++) {
-      var price = novoInf + step * i;
-      if (price >= mkt) continue;
+    const maxNiveisPorCiclo = 20;
+
+    while (novoNivel <= mkt && capitalAlocado < teto && criadas < maxNiveisPorCiclo) {
+      var price = novoNivel;
       if (tickSize > 0) {
         price = (price / tickSize).round() * tickSize;
         price = double.parse(price.toStringAsFixed(_decFromStep(tickSize)));
@@ -545,45 +549,60 @@ class GridMonitor {
         qty = (qty / qtyStep).floor() * qtyStep;
         qty = double.parse(qty.toStringAsFixed(_decFromStep(qtyStep)));
       }
-      if (qty <= 0) continue;
-      // Pula ordens abaixo do valor mínimo da corretora (~$5 na Bybit spot),
-      // evitando erro "Order value exceeded lower limit".
-      if (price * qty < 5.0) {
-        debugPrint('GRID_MONITOR: trailing - pulando nivel (valor ${(price * qty).toStringAsFixed(2)} < min)');
+      final custo = price * qty;
+      if (qty <= 0 || custo < 5.0) {
+        novoNivel += espac;
         continue;
+      }
+      if (capitalAlocado + custo > teto) {
+        debugPrint('GRID_MONITOR: trailing UP ($symbol) - proximo nivel estouraria o teto, parando');
+        break;
       }
       try {
         final novoId = await _criarOrdem(exchange, apiKey, secret, symbol,
             'Buy', price, qty, tickSize, qtyStep);
-        var parPrice = price + step;
+        var parPrice = price + espac;
         if (tickSize > 0) {
           parPrice = (parPrice / tickSize).round() * tickSize;
           parPrice = double.parse(parPrice.toStringAsFixed(_decFromStep(tickSize)));
         }
         await _registrarOrdem(gridId, token, {
           'exchange_order_id': novoId,
-          'nivel': i + 1,
+          'nivel': niveis + criadas + 1,
           'side': 'BUY',
           'price': price,
           'qty': qty,
           'par_price': parPrice,
           'status': 'open',
         });
+        capitalAlocado += custo;
+        novoTopo = price;
         criadas++;
       } catch (e) {
-        debugPrint('GRID_MONITOR: trailing - falha ao criar BUY @ $price: $e');
+        debugPrint('GRID_MONITOR: trailing UP - falha ao criar BUY @ $price: $e');
       }
+      novoNivel += espac;
+    }
+
+    if (criadas == 0) {
+      debugPrint('GRID_MONITOR: trailing UP ($symbol) - nenhum nivel novo criado '
+          '(preco subiu pouco: falta atingir sup+espac, ou teto/min atingido)');
+      return false;
     }
 
     try {
       await http.patch(
         Uri.parse('$_baseUrl/grids/$gridId/trailing'),
         headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'limite_superior': novoSup, 'limite_inferior': novoInf}),
+        body: jsonEncode({
+          'limite_superior': novoTopo,
+          'limite_inferior': inf,
+          'trailing_count': count + 1,
+        }),
       ).timeout(const Duration(seconds: 10));
-      debugPrint('GRID_MONITOR: TRAILING $direcao concluído - $criadas ordens criadas, range atualizado');
+      debugPrint('GRID_MONITOR: TRAILING UP concluído ($symbol) - $criadas niveis adicionados, novo topo=$novoTopo');
     } catch (e) {
-      debugPrint('GRID_MONITOR: trailing - falha ao atualizar grid: $e');
+      debugPrint('GRID_MONITOR: trailing UP - falha ao atualizar grid: $e');
     }
     return true;
   }
