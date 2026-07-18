@@ -46,3 +46,6 @@ app.*.map.json
 android/.kotlin/
 lib/test_*tmp*
 *.darty
+
+# Visual Studio
+.vs/

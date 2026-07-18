@@ -1,12 +1,12 @@
-/// FênixDay — Configuração de APIs das Corretoras
+﻿/// FÃªnixDay â€” ConfiguraÃ§Ã£o de APIs das Corretoras
 ///
 /// Exchanges suportadas:
-///   • Binance  (Mainnet + Testnet)
-///   • Bybit    (Mainnet + Testnet)
-///   • OKX      (Live + Demo Trading)
-///   • Bitget   (Mainnet + Testnet)
-///   • MEXC     (Mainnet)
-///   • Crypto.com (Live + Sandbox)
+///   â€¢ Binance  (Mainnet + Testnet)
+///   â€¢ Bybit    (Mainnet + Testnet)
+///   â€¢ OKX      (Live + Demo Trading)
+///   â€¢ Bitget   (Mainnet + Testnet)
+///   â€¢ MEXC     (Mainnet)
+///   â€¢ Crypto.com (Live + Sandbox)
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -19,7 +19,7 @@ import 'package:crypto/crypto.dart';
 
 import '../../theme/fenix_theme.dart';
 
-// ── Constantes de storage ─────────────────────────────────────────────────────
+// â”€â”€ Constantes de storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const _kStorage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -35,7 +35,7 @@ String _keyTestnet(String exchange) => 'fenix_${exchange}_testnet';
 // OKX e Crypto.com precisam de passphrase
 String _keyPassphrase(String exchange) => 'fenix_${exchange}_passphrase';
 
-// ── Modelos ───────────────────────────────────────────────────────────────────
+// â”€â”€ Modelos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 enum ExchangeId { binance, bybit, okx, bitget, mexc, cryptocom }
 
@@ -110,7 +110,7 @@ const _exchanges = {
     apiKeyLabel: 'API Key',
     secretLabel: 'Secret Key',
     apiKeyHint: 'Ex: bg_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
-    testnetLabel: 'Usar Simulação',
+    testnetLabel: 'Usar SimulaÃ§Ã£o',
     hasPassphrase: true,
     docsUrl: 'https://www.bitget.com/pt-BR/support/articles/10000007488',
   ),
@@ -177,7 +177,7 @@ class _ExchangeState {
   );
 }
 
-// ── Provider ──────────────────────────────────────────────────────────────────
+// â”€â”€ Provider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 final _exchangeProvider = StateNotifierProvider.family<
     _ExchangeNotifier, _ExchangeState, ExchangeId>(
@@ -205,11 +205,11 @@ class _ExchangeNotifier extends StateNotifier<_ExchangeState> {
   }
 
   Future<void> saveKeys(String apiKey, String secret, {String passphrase = ''}) async {
-    await Future.wait([
-      _kStorage.write(key: _keyApiKey(_name),     value: apiKey.trim()),
-      _kStorage.write(key: _keySecret(_name),     value: secret.trim()),
-      _kStorage.write(key: _keyPassphrase(_name), value: passphrase.trim()),
-    ]);
+    await (() async {
+      await _kStorage.write(key: _keyApiKey(_name), value: apiKey.trim());
+      await _kStorage.write(key: _keySecret(_name), value: secret.trim());
+      await _kStorage.write(key: _keyPassphrase(_name), value: passphrase.trim());
+    })();
     state = state.copyWith(
       apiKey: apiKey.trim(), secret: secret.trim(),
       passphrase: passphrase.trim(),
@@ -228,13 +228,11 @@ class _ExchangeNotifier extends StateNotifier<_ExchangeState> {
   }
 
   Future<void> deleteKeys() async {
-    await Future.wait([
-      _kStorage.delete(key: _keyApiKey(_name)),
-      _kStorage.delete(key: _keySecret(_name)),
-      _kStorage.delete(key: _keyPassphrase(_name)),
-      _kStorage.delete(key: _keyEnabled(_name)),
-      _kStorage.delete(key: _keyTestnet(_name)),
-    ]);
+    await _kStorage.delete(key: _keyApiKey(_name));
+    await _kStorage.delete(key: _keySecret(_name));
+    await _kStorage.delete(key: _keyPassphrase(_name));
+    await _kStorage.delete(key: _keyEnabled(_name));
+    await _kStorage.delete(key: _keyTestnet(_name));
     state = const _ExchangeState();
   }
 
@@ -242,7 +240,7 @@ class _ExchangeNotifier extends StateNotifier<_ExchangeState> {
     if (!state.hasKeys) return;
     state = state.copyWith(
       status: ConnectionStatus.testing,
-      statusMessage: 'Testando conexão...',
+      statusMessage: 'Testando conexÃ£o...',
     );
     try {
       final ok = await _testApi(
@@ -251,8 +249,8 @@ class _ExchangeNotifier extends StateNotifier<_ExchangeState> {
       state = state.copyWith(
         status: ok ? ConnectionStatus.ok : ConnectionStatus.error,
         statusMessage: ok
-            ? 'Conexão estabelecida com sucesso!'
-            : 'Chave inválida ou sem permissão.',
+            ? 'ConexÃ£o estabelecida com sucesso!'
+            : 'Chave invÃ¡lida ou sem permissÃ£o.',
         lastTested: DateTime.now(),
       );
     } catch (e) {
@@ -264,7 +262,7 @@ class _ExchangeNotifier extends StateNotifier<_ExchangeState> {
   }
 }
 
-// ── Testa a API de cada exchange ──────────────────────────────────────────────
+// â”€â”€ Testa a API de cada exchange â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 Future<bool> _testApi(ExchangeId id, String apiKey, String secret, bool testnet,
     {String passphrase = ''}) async {
@@ -392,7 +390,7 @@ String _hmacSha256(String secret, String data) {
   return hmac.convert(utf8.encode(data)).toString();
 }
 
-// ── Tela principal ────────────────────────────────────────────────────────────
+// â”€â”€ Tela principal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ExchangeSettingsScreen extends ConsumerWidget {
   const ExchangeSettingsScreen({super.key});
@@ -431,7 +429,7 @@ class ExchangeSettingsScreen extends ConsumerWidget {
   }
 }
 
-// ── Banner de segurança ───────────────────────────────────────────────────────
+// â”€â”€ Banner de seguranÃ§a â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _SecurityBanner extends StatelessWidget {
   @override
@@ -455,8 +453,8 @@ class _SecurityBanner extends StatelessWidget {
                     color: FenixColors.green)),
             SizedBox(height: 3),
             Text(
-              'Suas chaves são criptografadas pelo hardware do dispositivo '
-              '(Android Keystore / iOS Keychain) e NUNCA são enviadas ao servidor.',
+              'Suas chaves sÃ£o criptografadas pelo hardware do dispositivo '
+              '(Android Keystore / iOS Keychain) e NUNCA sÃ£o enviadas ao servidor.',
               style: TextStyle(fontSize: 11, color: FenixColors.textMuted, height: 1.4),
             ),
           ],
@@ -466,7 +464,7 @@ class _SecurityBanner extends StatelessWidget {
   );
 }
 
-// ── Card de exchange ──────────────────────────────────────────────────────────
+// â”€â”€ Card de exchange â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _ExchangeCard extends ConsumerStatefulWidget {
   final ExchangeId exchangeId;
@@ -516,7 +514,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
         ),
       ),
       child: Column(children: [
-        // ── Header ──────────────────────────────────────────────────
+        // â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         Padding(
           padding: const EdgeInsets.all(14),
           child: Row(children: [
@@ -539,7 +537,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
                 if (state.hasKeys)
                   _StatusChip(status: state.status, message: state.statusMessage)
                 else
-                  const Text('Chaves não configuradas',
+                  const Text('Chaves nÃ£o configuradas',
                       style: TextStyle(fontSize: 10, color: FenixColors.textMuted)),
               ],
             )),
@@ -553,7 +551,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
           ]),
         ),
 
-        // ── Formulário ──────────────────────────────────────────────
+        // â”€â”€ FormulÃ¡rio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (_editing || !state.hasKeys) ...[
           const Divider(height: 0, thickness: .5, color: FenixColors.border),
           Padding(
@@ -594,7 +592,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
                   style: const TextStyle(fontFamily: 'RobotoMono',
                       fontSize: 12, color: FenixColors.textPrimary),
                   decoration: InputDecoration(
-                    hintText: '••••••••••••••••••••••••',
+                    hintText: 'â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢',
                     hintStyle: const TextStyle(fontSize: 11, color: FenixColors.textMuted),
                     suffixIcon: IconButton(
                       icon: Icon(
@@ -649,13 +647,13 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
                     child: const Row(children: [
                       Icon(Icons.science_outlined, size: 13, color: FenixColors.orange),
                       SizedBox(width: 6),
-                      Text('Modo Demo ativo — nenhuma ordem real será executada',
+                      Text('Modo Demo ativo â€” nenhuma ordem real serÃ¡ executada',
                           style: TextStyle(fontSize: 10, color: FenixColors.orange)),
                     ]),
                   ),
                 const SizedBox(height: 14),
 
-                // Botões
+                // BotÃµes
                 Row(children: [
                   Expanded(
                     child: OutlinedButton(
@@ -679,7 +677,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
                       ),
                       icon: const Icon(Icons.save_outlined, size: 15),
-                      label: const Text('Salvar com segurança',
+                      label: const Text('Salvar com seguranÃ§a',
                           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
                       onPressed: () async {
                         if (_apiCtrl.text.isEmpty || _secretCtrl.text.isEmpty) return;
@@ -697,7 +695,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
           ),
         ],
 
-        // ── Ações ───────────────────────────────────────────────────
+        // â”€â”€ AÃ§Ãµes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if (state.hasKeys && !_editing) ...[
           const Divider(height: 0, thickness: .5, color: FenixColors.border),
           Padding(
@@ -716,7 +714,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
                 )
               else
                 Text(
-                  '${state.apiKey.substring(0, state.apiKey.length.clamp(0, 6))}••••••',
+                  '${state.apiKey.substring(0, state.apiKey.length.clamp(0, 6))}â€¢â€¢â€¢â€¢â€¢â€¢',
                   style: const TextStyle(fontFamily: 'RobotoMono',
                       fontSize: 11, color: FenixColors.textMuted),
                 ),
@@ -775,7 +773,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500,
                 color: FenixColors.textPrimary)),
         content: const Text(
-          'As chaves serão removidas permanentemente do armazenamento seguro do dispositivo.',
+          'As chaves serÃ£o removidas permanentemente do armazenamento seguro do dispositivo.',
           style: TextStyle(fontSize: 12, color: FenixColors.textMuted),
         ),
         actions: [
@@ -796,7 +794,7 @@ class _ExchangeCardState extends ConsumerState<_ExchangeCard> {
   }
 }
 
-// ── Chip de status ────────────────────────────────────────────────────────────
+// â”€â”€ Chip de status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _StatusChip extends StatelessWidget {
   final ConnectionStatus status;
@@ -806,7 +804,7 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (color, icon, label) = switch (status) {
-      ConnectionStatus.idle    => (FenixColors.textMuted, Icons.circle_outlined,   'Não testado'),
+      ConnectionStatus.idle    => (FenixColors.textMuted, Icons.circle_outlined,   'NÃ£o testado'),
       ConnectionStatus.testing => (FenixColors.yellow,    Icons.hourglass_top,     'Testando...'),
       ConnectionStatus.ok      => (FenixColors.green,     Icons.check_circle_outline, 'Conectado'),
       ConnectionStatus.error   => (FenixColors.red,       Icons.error_outline,     'Erro'),
@@ -824,7 +822,7 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-// ── Dica sobre permissões ─────────────────────────────────────────────────────
+// â”€â”€ Dica sobre permissÃµes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _PermissionsTip extends StatelessWidget {
   @override
@@ -841,7 +839,7 @@ class _PermissionsTip extends StatelessWidget {
         const Row(children: [
           Icon(Icons.shield_outlined, size: 14, color: FenixColors.yellow),
           SizedBox(width: 6),
-          Text('Permissões recomendadas para a API Key',
+          Text('PermissÃµes recomendadas para a API Key',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500,
                   color: FenixColors.textPrimary)),
         ]),
@@ -851,7 +849,7 @@ class _PermissionsTip extends StatelessWidget {
           ('Spot Trading', true),
           ('Futuros', false),
           ('Saque', false),
-          ('Transferência interna', false),
+          ('TransferÃªncia interna', false),
         ].map((item) => Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Row(children: [
@@ -866,14 +864,14 @@ class _PermissionsTip extends StatelessWidget {
             if (!item.$2)
               const Padding(
                 padding: EdgeInsets.only(left: 8),
-                child: Text('NÃO ativar',
+                child: Text('NÃƒO ativar',
                     style: TextStyle(fontSize: 10, color: FenixColors.red)),
               ),
           ]),
         )),
         const SizedBox(height: 8),
         const Text(
-          '⚠ Nunca ative permissão de SAQUE. O bot só precisa de Spot Trading.',
+          'âš  Nunca ative permissÃ£o de SAQUE. O bot sÃ³ precisa de Spot Trading.',
           style: TextStyle(fontSize: 10, color: FenixColors.orange, height: 1.4),
         ),
       ],

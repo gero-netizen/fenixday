@@ -1,12 +1,12 @@
-/// FênixDay — Entrada do App Flutter
+﻿/// FÃªnixDay â€” Entrada do App Flutter
 ///
 /// Configura:
-///   • MaterialApp com tema escuro Binance+Bybit
-///   • GoRouter com todas as 12 rotas
-///   • Riverpod (ProviderScope) como raiz
-///   • Redirect automático para login se não autenticado
+///   â€¢ MaterialApp com tema escuro Binance+Bybit
+///   â€¢ GoRouter com todas as 12 rotas
+///   â€¢ Riverpod (ProviderScope) como raiz
+///   â€¢ Redirect automÃ¡tico para login se nÃ£o autenticado
 
-import 'dart:io' show Platform;
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -33,12 +33,12 @@ import 'ui/screens/client_profile_screen.dart';
 import 'ui/screens/scanner_screen.dart';
 import 'ui/screens/grids_screen.dart';
 
-// ── Provider de autenticação ──────────────────────────────────────────────────
+// â”€â”€ Provider de autenticaÃ§Ã£o â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 final authProvider = StateProvider<bool>((ref) => false);
 final superuserProvider = StateProvider<bool>((ref) => false);
 
-// ── Router ────────────────────────────────────────────────────────────────────
+// â”€â”€ Router â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 final _router = GoRouter(
   initialLocation: '/login',
@@ -134,12 +134,24 @@ final _router = GoRouter(
   ],
 );
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Main â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+class _FenixHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    // SecurityContext com certificados raiz do sistema. Resolve o
+    // CERTIFICATE_VERIFY_FAILED da Bybit no Windows, mantendo a validacao
+    // SSL normal (nao desabilita a verificacao - e seguro).
+    final ctx = SecurityContext(withTrustedRoots: true);
+    return super.createHttpClient(ctx);
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = _FenixHttpOverrides();
 
-  // Forçar orientação portrait em mobile
+  // ForÃ§ar orientaÃ§Ã£o portrait em mobile
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
@@ -154,8 +166,8 @@ void main() async {
     statusBarIconBrightness: Brightness.light,
   ));
 
-  // Inicializa o canal de comunicação do foreground service
-  // Foreground service só em mobile; no desktop o Timer.periodic basta.
+  // Inicializa o canal de comunicaÃ§Ã£o do foreground service
+  // Foreground service sÃ³ em mobile; no desktop o Timer.periodic basta.
   if (Platform.isAndroid || Platform.isIOS) {
     FlutterForegroundTask.initCommunicationPort();
     _configurarForegroundService();
@@ -168,13 +180,13 @@ void main() async {
   );
 }
 
-/// Configura o canal de notificação e opções do foreground service.
+/// Configura o canal de notificaÃ§Ã£o e opÃ§Ãµes do foreground service.
 void _configurarForegroundService() {
   FlutterForegroundTask.init(
     androidNotificationOptions: AndroidNotificationOptions(
       channelId: 'fenix_grid_monitor',
-      channelName: 'Monitor de Grids FênixDay',
-      channelDescription: 'Mantém o monitor de grids ativo em segundo plano.',
+      channelName: 'Monitor de Grids FÃªnixDay',
+      channelDescription: 'MantÃ©m o monitor de grids ativo em segundo plano.',
       onlyAlertOnce: true,
     ),
     iosNotificationOptions: const IOSNotificationOptions(),
@@ -188,19 +200,19 @@ void _configurarForegroundService() {
 }
 
 /// Inicia o monitor em background (foreground service).
-/// Chamado quando há pelo menos um grid ativo.
+/// Chamado quando hÃ¡ pelo menos um grid ativo.
 Future<void> iniciarMonitorBackground() async {
-  // Foreground service só existe em Android/iOS. No desktop, o Timer.periodic
-  // do GridMonitor já basta (o SO não mata o app como o Android faz).
+  // Foreground service sÃ³ existe em Android/iOS. No desktop, o Timer.periodic
+  // do GridMonitor jÃ¡ basta (o SO nÃ£o mata o app como o Android faz).
   if (!(Platform.isAndroid || Platform.isIOS)) return;
-  // Pede permissão de notificação (Android 13+) se necessário
+  // Pede permissÃ£o de notificaÃ§Ã£o (Android 13+) se necessÃ¡rio
   final permission = await FlutterForegroundTask.checkNotificationPermission();
   if (permission != NotificationPermission.granted) {
     await FlutterForegroundTask.requestNotificationPermission();
   }
-  if (await FlutterForegroundTask.isRunningService) return; // já rodando
+  if (await FlutterForegroundTask.isRunningService) return; // jÃ¡ rodando
   await FlutterForegroundTask.startService(
-    notificationTitle: 'FênixDay — monitorando grids',
+    notificationTitle: 'FÃªnixDay â€” monitorando grids',
     notificationText: 'Iniciando...',
     callback: startGridMonitorTask,
   );
@@ -214,7 +226,7 @@ Future<void> pararMonitorBackground() async {
   }
 }
 
-// ── App Widget ────────────────────────────────────────────────────────────────
+// â”€â”€ App Widget â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class FenixApp extends ConsumerWidget {
   const FenixApp({super.key});
@@ -222,7 +234,7 @@ class FenixApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp.router(
-      title:          'FênixDay',
+      title:          'FÃªnixDay',
       debugShowCheckedModeBanner: false,
       theme:          fenixTheme,
       routerConfig:   _router,
@@ -239,7 +251,7 @@ class FenixApp extends ConsumerWidget {
   }
 }
 
-// ── Shell com BottomNavigationBar ─────────────────────────────────────────────
+// â”€â”€ Shell com BottomNavigationBar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _MainShell extends ConsumerStatefulWidget {
   final Widget child;
@@ -254,7 +266,7 @@ class _MainShellState extends ConsumerState<_MainShell> with WidgetsBindingObser
     (icon: Icons.bar_chart_outlined,      activeIcon: Icons.bar_chart,            label: 'P&L',      route: '/dashboard'),
     (icon: Icons.grid_view_outlined,      activeIcon: Icons.grid_view,            label: 'Grids',    route: '/grids'),
     (icon: Icons.document_scanner_outlined,activeIcon: Icons.document_scanner,    label: 'Scanner',  route: '/scanner'),
-    (icon: Icons.verified_outlined,       activeIcon: Icons.verified,             label: 'Licença',  route: '/licenca'),
+    (icon: Icons.verified_outlined,       activeIcon: Icons.verified,             label: 'LicenÃ§a',  route: '/licenca'),
     (icon: Icons.settings_outlined,       activeIcon: Icons.settings,             label: 'Config',   route: '/configuracoes'),
   ];
 
@@ -265,14 +277,14 @@ class _MainShellState extends ConsumerState<_MainShell> with WidgetsBindingObser
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     GridMonitor.instance.iniciar();
-    // Inicia o serviço de background (mantém o monitor vivo com app fechado)
+    // Inicia o serviÃ§o de background (mantÃ©m o monitor vivo com app fechado)
     iniciarMonitorBackground();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    // Quando o app volta ao foco, garante que o monitor está vivo
+    // Quando o app volta ao foco, garante que o monitor estÃ¡ vivo
     // e dispara um ciclo imediato (evita ter que puxar a tela).
     if (state == AppLifecycleState.resumed) {
       GridMonitor.instance.iniciar();      // resiliente: recria timer se morto
@@ -313,7 +325,7 @@ class _MainShellState extends ConsumerState<_MainShell> with WidgetsBindingObser
   }
 }
 
-// ── Placeholders (substituir por telas reais) ──────────────────────────────────
+// â”€â”€ Placeholders (substituir por telas reais) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class _GridsPlaceholder extends StatelessWidget {
   const _GridsPlaceholder();
@@ -359,7 +371,7 @@ class _SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: FenixColors.bg,
-      appBar: AppBar(title: const Text('Configurações')),
+      appBar: AppBar(title: const Text('ConfiguraÃ§Ãµes')),
       body: ListView(
         padding: const EdgeInsets.all(14),
         children: [
@@ -440,7 +452,7 @@ class _SettingsScreen extends StatelessWidget {
         backgroundColor: FenixColors.card,
         title: const Text('Sair da conta',
             style: TextStyle(color: FenixColors.textPrimary, fontSize: 16)),
-        content: const Text('Tem certeza que deseja sair? Você precisará fazer login novamente.',
+        content: const Text('Tem certeza que deseja sair? VocÃª precisarÃ¡ fazer login novamente.',
             style: TextStyle(color: FenixColors.textMuted, fontSize: 13)),
         actions: [
           TextButton(
@@ -464,7 +476,7 @@ class _SettingsScreen extends StatelessWidget {
     try {
       await GoogleSignIn().signOut();
     } catch (_) {}
-    // Limpar dados de sessão
+    // Limpar dados de sessÃ£o
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('access_token');
     await prefs.remove('is_superuser');
