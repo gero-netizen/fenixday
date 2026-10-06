@@ -4,18 +4,15 @@
 /// • Saldo separado por corretora
 
 import 'dart:async';
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../theme/fenix_theme.dart';
 import 'shared_providers.dart';
 import 'services/exchange_service.dart';
-
-const _baseUrl = 'https://fenixday.info/api/v1';
+import 'services/grid_db.dart';
 
 // ── Provider de usuário ───────────────────────────────────────────────────────
 
@@ -29,28 +26,11 @@ class _UserNotifier extends StateNotifier<AsyncValue<_UserInfo>> {
   _UserNotifier() : super(const AsyncValue.loading()) { load(); }
 
   Future<void> load() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('access_token');
-      if (token == null) { state = AsyncValue.error('Não autenticado', StackTrace.current); return; }
-      final meRes  = await http.get(Uri.parse('$_baseUrl/auth/me'),
-          headers: {'Authorization': 'Bearer $token'});
-      final subRes = await http.get(Uri.parse('$_baseUrl/subscriptions/status'),
-          headers: {'Authorization': 'Bearer $token'});
-      if (meRes.statusCode == 200) {
-        final me = jsonDecode(meRes.body);
-        bool realMode = false;
-        if (subRes.statusCode == 200) {
-          realMode = jsonDecode(subRes.body)['real_mode_allowed'] == true;
-        }
-        state = AsyncValue.data(_UserInfo(
-          email: me['email'] ?? '',
-          realModeAllowed: realMode,
-        ));
-      } else {
-        state = AsyncValue.error('Erro', StackTrace.current);
-      }
-    } catch (e, st) { state = AsyncValue.error(e, st); }
+    // App pessoal local: sem servidor nem licença. Modo real sempre liberado.
+    state = const AsyncValue.data(_UserInfo(
+      email: 'local',
+      realModeAllowed: true,
+    ));
   }
 }
 
@@ -112,33 +92,47 @@ class _GridSummary {
       totalCapital:0, totalLucro:0, totalCiclos:0, gridsAtivos:0, grids:[]);
 }
 class _GridSummaryNotifier extends StateNotifier<AsyncValue<_GridSummary>> {
-  _GridSummaryNotifier() : super(const AsyncValue.loading()) { fetch(); }
+  final GridDatabase _db;
+  _GridSummaryNotifier(this._db) : super(const AsyncValue.loading()) { fetch(); }
   Future<void> fetch({bool? modoReal}) async {
     state = const AsyncValue.loading();
     try {
       final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('access_token') ?? '';
       final modo = modoReal ?? (prefs.getBool('fenix_modo_real') ?? true);
-      final r = await http.get(
-        Uri.parse('https://fenixday.info/api/v1/grids/summary?modo_real=$modo'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 10));
-      if (r.statusCode == 200) {
-        final d = jsonDecode(r.body);
-        state = AsyncValue.data(_GridSummary(
-          totalCapital: (d['total_capital'] as num).toDouble(),
-          totalLucro:   (d['total_lucro']   as num).toDouble(),
-          totalCiclos:  d['total_ciclos']  as int,
-          gridsAtivos:  d['grids_ativos']  as int,
-          grids: List<Map<String,dynamic>>.from(d['grids'] ?? []),
-        ));
-      } else { state = AsyncValue.data(_GridSummary.empty()); }
+      final lista = await _db.getGridsByMode(modo);
+      double capital = 0, lucro = 0;
+      int ciclos = 0, ativos = 0;
+      final gridsList = <Map<String, dynamic>>[];
+      for (final g in lista) {
+        capital += g.capitalUsdt;
+        lucro   += g.lucroRealizado;
+        ciclos  += g.ciclosFechados;
+        if (g.status == 'active') ativos++;
+        gridsList.add({
+          'id': g.id, 'symbol': g.symbol, 'exchange': g.exchange,
+          'capital_usdt': g.capitalUsdt, 'lucro_realizado': g.lucroRealizado,
+          'ciclos_fechados': g.ciclosFechados, 'status': g.status,
+        });
+      }
+      state = AsyncValue.data(_GridSummary(
+        totalCapital: capital,
+        totalLucro:   lucro,
+        totalCiclos:  ciclos,
+        gridsAtivos:  ativos,
+        grids:        gridsList,
+      ));
     } catch (e,st) { state = AsyncValue.error(e,st); }
   }
 }
+final gridDbProvider = Provider<GridDatabase>((ref) {
+  final db = GridDatabase();
+  ref.onDispose(db.close);
+  return db;
+});
+
 final _gridSummaryProvider =
     StateNotifierProvider<_GridSummaryNotifier, AsyncValue<_GridSummary>>(
-  (ref) => _GridSummaryNotifier());
+  (ref) => _GridSummaryNotifier(ref.watch(gridDbProvider)));
 
 class DashboardScreenV2 extends ConsumerStatefulWidget {
   const DashboardScreenV2({super.key});
