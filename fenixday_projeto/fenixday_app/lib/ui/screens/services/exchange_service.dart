@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'grid_db.dart';
 
 const _kStorage = FlutterSecureStorage(
   aOptions: AndroidOptions(encryptedSharedPreferences: true),
@@ -788,22 +789,20 @@ class ExchangeService {
 
     // P&L do dia: usa o lucro REAL dos ciclos do grid (backend),
     // não o cálculo aproximado SELL-avgBuy que distorcia o resultado.
+    // P&L a partir do banco LOCAL. Obs: o banco guarda o lucro ACUMULADO
+    // por grid (não separado por dia), então aqui refletimos o total
+    // realizado. Para P&L estrito "do dia", seria preciso uma tabela de
+    // ciclos com data (a fazer).
     double pnlHoje = 0;
     int    ciclos  = 0;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('access_token') ?? '';
-      if (token.isNotEmpty) {
-        final rr = await http.get(
-          Uri.parse('https://fenixday.info/api/v1/grids/cycles/today'),
-          headers: {'Authorization': 'Bearer $token'},
-        ).timeout(const Duration(seconds: 10));
-        if (rr.statusCode == 200) {
-          final d = jsonDecode(rr.body);
-          pnlHoje = (d['lucro_hoje'] as num?)?.toDouble() ?? 0.0;
-          ciclos  = (d['ciclos_hoje'] as num?)?.toInt() ?? 0;
-        }
+      final db = GridDatabase();
+      final grids = await db.getAllGrids();
+      for (final g in grids) {
+        pnlHoje += g.lucroRealizado;
+        ciclos  += g.ciclosFechados;
       }
+      await db.close();
     } catch (e) {
       // silencioso: se falhar, fica 0 (não quebra o dashboard)
     }
