@@ -18,6 +18,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import '../theme/fenix_theme.dart';
 import 'services/exchange_service.dart';
+import 'services/grid_db.dart';
+import 'package:drift/drift.dart' show Value;
+import 'package:uuid/uuid.dart';
 import '../widgets/chart/candlestick_chart.dart';
 
 // ── Breakpoints ──────────────────────────────────────────────────────────────
@@ -26,6 +29,13 @@ const double _kDesktop = 1100.0;
 
 // ── Providers ────────────────────────────────────────────────────────────────
 final _tfProvider    = StateProvider<String>((ref) => '1h');
+
+final gridDbProvider = Provider<GridDatabase>((ref) {
+  final db = GridDatabase();
+  ref.onDispose(db.close);
+  return db;
+});
+final _uuid = const Uuid();
 
 // ── Provider de candles reais ─────────────────────────────────────────────────
 final _symbolProvider   = StateProvider<String>((ref) => 'BTCUSDT');
@@ -1762,53 +1772,34 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
   Future<void> _create(bool modoReal) async {
     setState(() => _loading = true);
     try {
-      final prefs    = await SharedPreferences.getInstance();
-      final token    = prefs.getString('access_token') ?? '';
       final capital  = widget.params.allocatedUsdt > 0 ? widget.params.allocatedUsdt : 100.0;
       final niveis   = widget.params.numGrids;
       final upper    = widget.params.upperPrice;
       final lower    = widget.params.lowerPrice;
       final exchange = widget.exchange.toLowerCase();
 
-      // 1. Registrar grid no backend
-      final payload = {
-        'symbol':             widget.symbol,
-        'exchange':           exchange,
-        'capital_usdt':       capital,
-        'niveis':             niveis,
-        'limite_superior':    upper,
-        'limite_inferior':    lower,
-        'espacamento_pct':    widget.params.currentMargin,
-        'margem_liquida_pct': widget.params.currentMargin,
-        'modo_real':          modoReal,
-        'trailing_up':        widget.params.trailingUp,
-        'trailing_down':      widget.params.trailingDown,
-        'max_trailing':       5,
-      };
-      final r = await http.post(
-        Uri.parse('https://fenixday.info/api/v1/grids'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
-      ).timeout(const Duration(seconds: 15));
+      // 1. Registrar grid no banco LOCAL (sem servidor)
+      final db = ref.read(gridDbProvider);
+      final gridId = _uuid.v4();
+      await db.insertGrid(GridsCompanion.insert(
+        id:               gridId,
+        symbol:           widget.symbol,
+        exchange:         exchange,
+        capitalUsdt:      capital,
+        niveis:           niveis,
+        limiteSuperior:   upper,
+        limiteInferior:   lower,
+        espacamentoPct:   widget.params.currentMargin,
+        margemLiquidaPct: widget.params.currentMargin,
+        modoReal:         Value(modoReal),
+      ));
 
       if (!mounted) return;
-
-      if (r.statusCode != 201) {
-        final err = jsonDecode(r.body)['detail'] ?? r.body;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Erro ao registrar grid: $err'),
-          backgroundColor: FenixColors.red,
-        ));
-        return;
-      }
-
-      // Capturar o ID do grid criado (para registrar as ordens)
-      final gridId = jsonDecode(r.body)['id']?.toString() ?? '';
 
       // 2. Se modo real, criar ordens na exchange
       if (modoReal) {
         try {
-          await _createExchangeOrders(exchange, capital, niveis, upper, lower, gridId, token);
+          await _createExchangeOrders(exchange, capital, niveis, upper, lower, gridId);
         } catch (e) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text('Grid criado mas erro nas ordens: $e'),
@@ -1838,7 +1829,7 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
   }
 
   Future<void> _createExchangeOrders(String exchange, double capital,
-      int niveis, double upper, double lower, String gridId, String token) async {
+      int niveis, double upper, double lower, String gridId) async {
     const storage = FlutterSecureStorage(
         aOptions: AndroidOptions(encryptedSharedPreferences: true));
     final apiKey = await storage.read(key: 'fenix_${exchange}_api_key') ?? '';
@@ -1936,15 +1927,18 @@ class _CreateButtonState extends ConsumerState<_CreateButton> {
     if (ordensEnviadas.isEmpty) {
       throw Exception('Nenhuma ordem enviada. Último erro: $lastError');
     }
-    // Registrar ordens no backend (para o monitor fechar ciclos)
+    // Registrar ordens no banco LOCAL (para o monitor fechar ciclos)
     if (gridId.isNotEmpty && ordensParaRegistrar.isNotEmpty) {
-      try {
-        final rr = await http.post(
-          Uri.parse('https://fenixday.info/api/v1/grids/$gridId/orders'),
-          headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-          body: jsonEncode(ordensParaRegistrar),
-        ).timeout(const Duration(seconds: 15));
-      } catch (e) {
+      final db = ref.read(gridDbProvider);
+      for (final o in ordensParaRegistrar) {
+        await db.insertOrder(GridOrdersCompanion.insert(
+          gridId:          gridId,
+          exchangeOrderId: Value(o['exchange_order_id']?.toString()),
+          nivel:           o['nivel'] as int,
+          lado:            (o['side'] ?? '').toString().toLowerCase(),
+          preco:           (o['price'] as num).toDouble(),
+          quantidade:      (o['qty'] as num).toDouble(),
+        ));
       }
     }
   }
