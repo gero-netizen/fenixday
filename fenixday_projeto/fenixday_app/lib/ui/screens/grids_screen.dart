@@ -7,14 +7,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fl_chart/fl_chart.dart';
 import 'package:go_router/go_router.dart';
 import '../theme/fenix_theme.dart';
 import 'shared_providers.dart';
+import 'package:drift/drift.dart' show Value;
+import 'services/grid_db.dart';
+import 'package:uuid/uuid.dart';
 
-const _baseUrl = 'https://fenixday.info/api/v1';
+// Banco local de grids (substitui o servidor).
+final gridDbProvider = Provider<GridDatabase>((ref) {
+  final db = GridDatabase();
+  ref.onDispose(db.close);
+  return db;
+});
+
+final _uuid = const Uuid();
 
 // ── Modelo ────────────────────────────────────────────────────────────────────
 
@@ -90,70 +99,92 @@ class GridModel {
 
 // ── Serviço API ───────────────────────────────────────────────────────────────
 
-class _GridsApi {
-  Future<String?> _token() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getString('access_token');
-  }
+// Converte uma linha do banco local (Grid) no GridModel que a tela usa.
+GridModel _gridFromDb(Grid g) => GridModel(
+  id:               g.id,
+  symbol:           g.symbol,
+  exchange:         g.exchange,
+  capitalUsdt:      g.capitalUsdt,
+  niveis:           g.niveis,
+  limiteSuperior:   g.limiteSuperior,
+  limiteInferior:   g.limiteInferior,
+  espacamentoPct:   g.espacamentoPct,
+  margemLiquidaPct: g.margemLiquidaPct,
+  adxEntrada:       g.adxEntrada,
+  atrPctEntrada:    g.atrPctEntrada,
+  gradeEntrada:     g.gradeEntrada,
+  lucroRealizado:   g.lucroRealizado,
+  ciclosFechados:   g.ciclosFechados,
+  volumeNegociado:  g.volumeNegociado,
+  status:           g.status,
+  modoReal:         g.modoReal,
+  createdAt:        g.createdAt,
+);
 
-  Map<String, String> _headers(String token) => {
-    'Authorization': 'Bearer $token',
-    'Content-Type': 'application/json',
-  };
+/// Acesso aos grids — agora 100% LOCAL (banco SQLite no PC), sem servidor.
+class _GridsApi {
+  final GridDatabase _db;
+  _GridsApi(this._db);
 
   Future<List<GridModel>> fetchGrids() async {
-    final token = await _token();
-    if (token == null) throw Exception('Não autenticado');
-    final r = await http.get(
-      Uri.parse('$_baseUrl/grids'),
-      headers: _headers(token),
-    ).timeout(const Duration(seconds: 10));
-    if (r.statusCode != 200) throw Exception('Erro ao buscar grids');
-    final List data = jsonDecode(r.body);
-    return data.map((j) => GridModel.fromJson(j)).toList();
+    final rows = await _db.getAllGrids();
+    return rows.map(_gridFromDb).toList();
   }
 
-  Future<GridModel> createGrid(Map<String, dynamic> payload) async {
-    final token = await _token();
-    if (token == null) throw Exception('Não autenticado');
-    final r = await http.post(
-      Uri.parse('$_baseUrl/grids'),
-      headers: _headers(token),
-      body: jsonEncode(payload),
-    ).timeout(const Duration(seconds: 10));
-    if (r.statusCode != 201) throw Exception(jsonDecode(r.body)['detail'] ?? 'Erro ao criar grid');
-    return GridModel.fromJson(jsonDecode(r.body));
+  /// Cria um grid a partir do payload que a tela de config monta.
+  /// Aceita tanto as chaves em pt (limite_superior) quanto camelCase.
+  Future<GridModel> createGrid(Map<String, dynamic> p) async {
+    double _d(List<String> keys, [double def = 0]) {
+      for (final k in keys) {
+        final v = p[k];
+        if (v != null) return (v as num).toDouble();
+      }
+      return def;
+    }
+    int _i(List<String> keys, [int def = 0]) {
+      for (final k in keys) {
+        final v = p[k];
+        if (v != null) return (v as num).toInt();
+      }
+      return def;
+    }
+
+    final id = (p['id']?.toString().isNotEmpty == true)
+        ? p['id'].toString()
+        : _uuid.v4();
+
+    await _db.insertGrid(GridsCompanion.insert(
+      id:               id,
+      symbol:           (p['symbol'] ?? '').toString(),
+      exchange:         (p['exchange'] ?? '').toString(),
+      capitalUsdt:      _d(['capital_usdt', 'capitalUsdt', 'capital']),
+      niveis:           _i(['niveis', 'num_grids', 'numGrids']),
+      limiteSuperior:   _d(['limite_superior', 'limiteSuperior', 'upper']),
+      limiteInferior:   _d(['limite_inferior', 'limiteInferior', 'lower']),
+      espacamentoPct:   _d(['espacamento_pct', 'espacamentoPct']),
+      margemLiquidaPct: _d(['margem_liquida_pct', 'margemLiquidaPct']),
+      adxEntrada:       Value(p['adx_entrada'] != null ? (p['adx_entrada'] as num).toDouble() : null),
+      atrPctEntrada:    Value(p['atr_pct_entrada'] != null ? (p['atr_pct_entrada'] as num).toDouble() : null),
+      gradeEntrada:     Value(p['grade_entrada']?.toString()),
+      modoReal:         Value(p['modo_real'] == true),
+    ));
+
+    final g = await _db.getGrid(id);
+    return _gridFromDb(g!);
   }
 
   Future<GridModel> pauseGrid(String id) async {
-    final token = await _token();
-    if (token == null) throw Exception('Não autenticado');
-    final r = await http.put(
-      Uri.parse('$_baseUrl/grids/$id/pause'),
-      headers: _headers(token),
-    ).timeout(const Duration(seconds: 10));
-    if (r.statusCode != 200) throw Exception('Erro ao pausar grid');
-    return GridModel.fromJson(jsonDecode(r.body));
+    await _db.updateGridStatus(id, 'paused');
+    return _gridFromDb((await _db.getGrid(id))!);
   }
 
   Future<GridModel> stopGrid(String id) async {
-    final token = await _token();
-    if (token == null) throw Exception('Não autenticado');
-    final r = await http.put(
-      Uri.parse('$_baseUrl/grids/$id/stop'),
-      headers: _headers(token),
-    ).timeout(const Duration(seconds: 10));
-    if (r.statusCode != 200) throw Exception('Erro ao parar grid');
-    return GridModel.fromJson(jsonDecode(r.body));
+    await _db.updateGridStatus(id, 'stopped');
+    return _gridFromDb((await _db.getGrid(id))!);
   }
 
   Future<void> deleteGrid(String id) async {
-    final token = await _token();
-    if (token == null) throw Exception('Não autenticado');
-    await http.delete(
-      Uri.parse('$_baseUrl/grids/$id'),
-      headers: _headers(token),
-    ).timeout(const Duration(seconds: 10));
+    await _db.deleteGrid(id);
   }
 }
 
@@ -174,8 +205,10 @@ final _gridPriceProvider = FutureProvider.family<double?, String>((ref, symbol) 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 class _GridsNotifier extends StateNotifier<AsyncValue<List<GridModel>>> {
-  final _api = _GridsApi();
-  _GridsNotifier() : super(const AsyncValue.loading()) { fetch(); }
+  final _GridsApi _api;
+  _GridsNotifier(GridDatabase db)
+      : _api = _GridsApi(db),
+        super(const AsyncValue.loading()) { fetch(); }
 
   Future<void> fetch() async {
     state = const AsyncValue.loading();
@@ -219,7 +252,7 @@ class _GridsNotifier extends StateNotifier<AsyncValue<List<GridModel>>> {
 
 final gridsProvider =
     StateNotifierProvider<_GridsNotifier, AsyncValue<List<GridModel>>>(
-  (ref) => _GridsNotifier(),
+  (ref) => _GridsNotifier(ref.watch(gridDbProvider)),
 );
 
 // ── Tela principal ────────────────────────────────────────────────────────────
