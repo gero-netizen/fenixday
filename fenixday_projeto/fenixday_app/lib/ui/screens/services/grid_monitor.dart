@@ -12,8 +12,8 @@ import 'package:http/http.dart' as http;
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-
-const _baseUrl = 'https://fenixday.info/api/v1';
+import 'package:drift/drift.dart' show Value;
+import 'grid_db.dart';
 
 class GridMonitor {
   Timer? _timer;
@@ -23,6 +23,9 @@ class GridMonitor {
   // Singleton simples
   static final GridMonitor instance = GridMonitor._();
   GridMonitor._();
+
+  // Banco local (substitui o servidor).
+  final GridDatabase _db = GridDatabase();
 
   void iniciar() {
     // Resiliente: cancela qualquer timer anterior e cria um novo,
@@ -80,14 +83,21 @@ class GridMonitor {
 
   Future<List<Map<String, dynamic>>> _buscarGridsAtivos(String token) async {
     try {
-      final r = await http.get(
-        Uri.parse('$_baseUrl/grids'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 10));
-      if (r.statusCode != 200) return [];
-      final lista = (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
-      return lista.where((g) =>
-          g['status'] == 'active' && g['modo_real'] == true).toList();
+      final rows = await _db.getAllGrids();
+      return rows
+          .where((g) => g.status == 'active' && g.modoReal == true)
+          .map((g) => {
+                'id': g.id,
+                'symbol': g.symbol,
+                'exchange': g.exchange,
+                'status': g.status,
+                'modo_real': g.modoReal,
+                'limite_superior': g.limiteSuperior,
+                'limite_inferior': g.limiteInferior,
+                'niveis': g.niveis,
+                'capital_usdt': g.capitalUsdt,
+              })
+          .toList();
     } catch (e) {
       debugPrint('GRID_MONITOR: erro ao buscar grids: $e');
       return [];
@@ -267,12 +277,16 @@ class GridMonitor {
 
   Future<List<Map<String, dynamic>>> _buscarOrdensOpen(String gridId, String token) async {
     try {
-      final r = await http.get(
-        Uri.parse('$_baseUrl/grids/$gridId/orders?status=open'),
-        headers: {'Authorization': 'Bearer $token'},
-      ).timeout(const Duration(seconds: 10));
-      if (r.statusCode != 200) return [];
-      return (jsonDecode(r.body) as List).cast<Map<String, dynamic>>();
+      final rows = await _db.getOpenOrders(gridId);
+      return rows.map((o) => {
+            'id': o.id,
+            'exchange_order_id': o.exchangeOrderId,
+            'nivel': o.nivel,
+            'side': o.lado,
+            'price': o.preco,
+            'qty': o.quantidade,
+            'status': o.status,
+          }).toList();
     } catch (e) {
       return [];
     }
@@ -408,12 +422,10 @@ class GridMonitor {
   /// Marca uma ordem como filled no backend. Retorna true se ok.
   Future<bool> _marcarFilled(String orderDbId, String token) async {
     try {
-      final r = await http.patch(
-        Uri.parse('$_baseUrl/grids/orders/$orderDbId'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'status': 'filled'}),
-      ).timeout(const Duration(seconds: 10));
-      return r.statusCode == 200;
+      final id = int.tryParse(orderDbId);
+      if (id == null) return false;
+      await _db.markOrderFilled(id);
+      return true;
     } catch (e) {
       return false;
     }
@@ -423,12 +435,10 @@ class GridMonitor {
   Future<bool> _marcarStatus(String orderDbId, String token, String status) async {
     if (orderDbId.isEmpty) return false;
     try {
-      final r = await http.patch(
-        Uri.parse('$_baseUrl/grids/orders/$orderDbId'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({'status': status}),
-      ).timeout(const Duration(seconds: 10));
-      return r.statusCode == 200;
+      final id = int.tryParse(orderDbId);
+      if (id == null) return false;
+      await _db.updateOrderStatus(id, status);
+      return true;
     } catch (e) {
       return false;
     }
@@ -437,11 +447,14 @@ class GridMonitor {
   /// Registra uma nova ordem no backend.
   Future<void> _registrarOrdem(String gridId, String token, Map<String, dynamic> ordem) async {
     try {
-      await http.post(
-        Uri.parse('$_baseUrl/grids/$gridId/orders'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode([ordem]),
-      ).timeout(const Duration(seconds: 10));
+      await _db.insertOrder(GridOrdersCompanion.insert(
+        gridId:          gridId,
+        exchangeOrderId: Value(ordem['exchange_order_id']?.toString()),
+        nivel:           (ordem['nivel'] as num?)?.toInt() ?? 0,
+        lado:            (ordem['side'] ?? '').toString().toLowerCase(),
+        preco:           (ordem['price'] as num?)?.toDouble() ?? 0,
+        quantidade:      (ordem['qty'] as num?)?.toDouble() ?? 0,
+      ));
     } catch (e) {
       debugPrint('GRID_MONITOR: erro ao registrar nova ordem: $e');
     }
@@ -452,14 +465,7 @@ class GridMonitor {
       String gridId, String token, double lucro, double volume,
       {double precoCompra = 0, double precoVenda = 0, int nivel = 0}) async {
     try {
-      await http.post(
-        Uri.parse('$_baseUrl/grids/$gridId/cycle-closed'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'lucro': lucro, 'volume': volume,
-          'preco_compra': precoCompra, 'preco_venda': precoVenda, 'nivel': nivel,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      await _db.registrarCiclo(gridId, lucro: lucro, volume: volume);
     } catch (e) {
       debugPrint('GRID_MONITOR: erro ao registrar ciclo: $e');
     }
@@ -591,15 +597,10 @@ class GridMonitor {
     }
 
     try {
-      await http.patch(
-        Uri.parse('$_baseUrl/grids/$gridId/trailing'),
-        headers: {'Authorization': 'Bearer $token', 'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'limite_superior': novoTopo,
-          'limite_inferior': inf,
-          'trailing_count': count + 1,
-        }),
-      ).timeout(const Duration(seconds: 10));
+      // Atualiza o novo topo do grid no banco local.
+      await _db.updateGrid(gridId, GridsCompanion(
+        limiteSuperior: Value(novoTopo),
+      ));
       debugPrint('GRID_MONITOR: TRAILING UP concluído ($symbol) - $criadas niveis adicionados, novo topo=$novoTopo');
     } catch (e) {
       debugPrint('GRID_MONITOR: trailing UP - falha ao atualizar grid: $e');
